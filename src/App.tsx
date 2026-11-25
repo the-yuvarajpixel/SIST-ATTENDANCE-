@@ -103,6 +103,7 @@ export default function App() {
   const [erpOutageSimulated, setErpOutageSimulated] = useState(false);
   const [syncingPortals, setSyncingPortals] = useState(false);
   const [lastSyncReport, setLastSyncReport] = useState<PortalSyncReport | null>(null);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
 
   const [attendanceTarget, setAttendanceTarget] = useState<number>(getInitialTarget);
   const [completedDeadlineIds, setCompletedDeadlineIds] = useState<Set<string>>(() =>
@@ -263,6 +264,7 @@ export default function App() {
       setDeadlines(emptySection());
       setNotifications(emptySection());
       setLastSyncReport(null);
+      setAuthNotice(null);
       setPaletteOpen(false);
       setMobileMenuOpen(false);
     }
@@ -321,6 +323,9 @@ export default function App() {
   const handlePortalsConnected = useCallback(
     async (nextUser: SessionUser) => {
       setUser(nextUser);
+      if (nextUser.erpTokenPresent) {
+        setAuthNotice(null);
+      }
       setSyncingPortals(true);
       try {
         const report = await api.syncPortals();
@@ -395,10 +400,11 @@ export default function App() {
         initialMode={signInInitialMode}
         onToggleTheme={handleToggleTheme}
         onOpenGuide={() => setShowPreLoginGuide(true)}
-        onSignedIn={(signedUser) => {
+        onSignedIn={(signedUser, warning) => {
           setSignInInitialMode(undefined);
           setShowPreLoginGuide(false);
           setUser(signedUser);
+          setAuthNotice(warning ?? null);
           setActiveSection('overview');
         }}
       />
@@ -433,7 +439,32 @@ export default function App() {
         />
 
         <main className="flex-1 px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
-          <div className="mx-auto max-w-6xl">
+          <div className="mx-auto max-w-6xl space-y-6">
+            {authNotice ? (
+              <div
+                role="status"
+                className="rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-xs text-amber-900 dark:text-amber-200 flex flex-wrap items-center justify-between gap-3"
+              >
+                <p className="leading-relaxed flex-1 min-w-0">{authNotice}</p>
+                <div className="flex items-center gap-3 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setActiveSection('sync')}
+                    className="font-medium underline cursor-pointer whitespace-nowrap"
+                  >
+                    Open Sync LMS &amp; ERP
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAuthNotice(null)}
+                    className="text-amber-800/80 dark:text-amber-300/80 hover:text-amber-950 dark:hover:text-amber-100 cursor-pointer"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
             {activeSection === 'overview' ? (
               <OverviewView
                 profile={profile}

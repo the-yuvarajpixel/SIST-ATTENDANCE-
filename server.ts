@@ -362,24 +362,40 @@ export function createApp() {
         let verifiedMoodleInfo: { userid: number; fullname: string } | null = null;
         let verifiedErpName: string | null = null;
         let erpExchangedFromLogin = false;
+        let partialWarning: string | undefined;
 
         if (!lmsToken && usingMoodleCreds) {
           // Exchange Moodle username/password once for a web-service token; password is never persisted.
           lmsToken = await exchangeMoodleCredentialsForToken(lmsUsername || registerNumber, lmsPassword);
         }
 
-        if (!erpToken && usingErpCreds) {
-          // Exchange ERP username/password once for an access token; password is never persisted.
-          const erpAuth = await exchangeErpCredentialsForToken(erpUsername || registerNumber, erpPassword);
-          erpToken = erpAuth.token;
-          verifiedErpName = erpAuth.studentName ?? null;
-          erpExchangedFromLogin = true;
-        }
-
         if (lmsToken) {
           const siteInfo = await verifyMoodleToken(lmsToken);
           verifiedMoodleInfo = { userid: siteInfo.userid, fullname: siteInfo.fullname };
         }
+
+        if (!erpToken && usingErpCreds) {
+          try {
+            // Exchange ERP username/password once for an access token; password is never persisted.
+            const erpAuth = await exchangeErpCredentialsForToken(erpUsername || registerNumber, erpPassword);
+            erpToken = erpAuth.token;
+            verifiedErpName = erpAuth.studentName ?? null;
+            erpExchangedFromLogin = true;
+          } catch (erpErr) {
+            if (
+              lmsToken &&
+              erpErr instanceof LiveUpstreamError &&
+              erpErr.code === 'erp_browser_login_required'
+            ) {
+              // Keep the verified Moodle LMS live session instead of discarding it when ERP requires direct website login.
+              partialWarning =
+                'Moodle LMS connected and synced! Sathyabama ERP blocks automated password login outside erp.sathyabama.ac.in — open Sync LMS & ERP to sign in directly on erp.sathyabama.ac.in and paste your Access-Token for attendance, timetable, and CGPA.';
+            } else {
+              throw erpErr;
+            }
+          }
+        }
+
         if (erpToken && !erpExchangedFromLogin) {
           const erpProfile = await verifyErpToken(
             erpToken,
@@ -406,12 +422,13 @@ export function createApp() {
           lmsUserId: verifiedMoodleInfo?.userid,
         });
 
-        res.json({ authenticated: true, user: toPublicUser(stored) });
+        res.json({ authenticated: true, user: toPublicUser(stored), warning: partialWarning });
         return;
       } catch (err) {
         if (err instanceof LiveUpstreamError) {
           res.status(err.status).json({
             error: err.message,
+            code: err.code,
             fieldErrors: err.field ? { [err.field]: err.message } : undefined,
           });
           return;
@@ -523,21 +540,35 @@ export function createApp() {
       let verifiedMoodleInfo: { userid: number; fullname: string } | null = null;
       let verifiedErpName: string | null = null;
       let erpExchangedFromLogin = false;
+      let partialWarning: string | undefined;
 
       if (!incomingLmsToken && usingMoodleCreds) {
         incomingLmsToken = await exchangeMoodleCredentialsForToken(lmsUsername || nextRegisterNumber, lmsPassword);
       }
 
-      if (!incomingErpToken && usingErpCreds) {
-        const erpAuth = await exchangeErpCredentialsForToken(erpUsername || nextRegisterNumber, erpPassword);
-        incomingErpToken = erpAuth.token;
-        verifiedErpName = erpAuth.studentName ?? null;
-        erpExchangedFromLogin = true;
-      }
-
       if (incomingLmsToken) {
         const siteInfo = await verifyMoodleToken(incomingLmsToken);
         verifiedMoodleInfo = { userid: siteInfo.userid, fullname: siteInfo.fullname };
+      }
+
+      if (!incomingErpToken && usingErpCreds) {
+        try {
+          const erpAuth = await exchangeErpCredentialsForToken(erpUsername || nextRegisterNumber, erpPassword);
+          incomingErpToken = erpAuth.token;
+          verifiedErpName = erpAuth.studentName ?? null;
+          erpExchangedFromLogin = true;
+        } catch (erpErr) {
+          if (
+            incomingLmsToken &&
+            erpErr instanceof LiveUpstreamError &&
+            erpErr.code === 'erp_browser_login_required'
+          ) {
+            partialWarning =
+              'Moodle LMS connected! Sathyabama ERP blocks automated password login outside erp.sathyabama.ac.in — sign in directly on erp.sathyabama.ac.in and paste your Access-Token below.';
+          } else {
+            throw erpErr;
+          }
+        }
       }
 
       const existingLiveLms = session.mode === 'live' ? session.lmsToken : undefined;
@@ -575,11 +606,12 @@ export function createApp() {
         lmsUserId: verifiedMoodleInfo?.userid ?? (session.mode === 'live' ? session.lmsUserId : undefined),
       });
 
-      res.json({ authenticated: true, user: toPublicUser(stored) });
+      res.json({ authenticated: true, user: toPublicUser(stored), warning: partialWarning });
     } catch (err) {
       if (err instanceof LiveUpstreamError) {
         res.status(err.status).json({
           error: err.message,
+          code: err.code,
           fieldErrors: err.field ? { [err.field]: err.message } : undefined,
         });
         return;

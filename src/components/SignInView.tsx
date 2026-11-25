@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { BookOpen, CheckCircle2, ChevronDown, ExternalLink, Info, Lock, Moon, Sun } from 'lucide-react';
 import type { DataSourceMode, LiveAdaptersSummary, SessionUser } from '../core/types';
 import { api } from '../lib/api';
@@ -8,29 +8,33 @@ interface SignInViewProps {
   theme: 'light' | 'dark';
   initialMode?: DataSourceMode;
   onToggleTheme: () => void;
-  onSignedIn: (user: SessionUser) => void;
+  onSignedIn: (user: SessionUser, warning?: string) => void;
   onOpenGuide: () => void;
 }
 
-type LiveAuthMethod = 'auto-login' | 'tokens';
+type LiveAuthMethod = 'auto-login' | 'direct-website';
+type ErpInputMode = 'token' | 'password';
 
 export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOpenGuide }: SignInViewProps) {
   const [mode, setMode] = useState<DataSourceMode>(initialMode ?? 'mock');
   const [liveAuthMethod, setLiveAuthMethod] = useState<LiveAuthMethod>('auto-login');
+  const [erpInputMode, setErpInputMode] = useState<ErpInputMode>('token');
   const [showTokenGuide, setShowTokenGuide] = useState(false);
   const [liveAdapters, setLiveAdapters] = useState<LiveAdaptersSummary | null>(null);
   const [registerNumber, setRegisterNumber] = useState('');
   const [name, setName] = useState('');
   const [erpUsername, setErpUsername] = useState('');
   const [erpPassword, setErpPassword] = useState('');
-  const [sameAsErp, setSameAsErp] = useState(false);
+  const [sameAsMoodle, setSameAsMoodle] = useState(false);
   const [lmsUsername, setLmsUsername] = useState('');
   const [lmsPassword, setLmsPassword] = useState('');
   const [erpToken, setErpToken] = useState('');
   const [lmsToken, setLmsToken] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [formErrorCode, setFormErrorCode] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const erpTokenInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,48 +55,72 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
     };
   }, [initialMode]);
 
+  const lmsHost = liveAdapters?.lmsHost ?? 'sathyabama.cognibot.in';
+  const erpHost = liveAdapters?.erpHost ?? 'erp.sathyabama.ac.in';
+  const erpLoginUrl = `https://${erpHost}/account/login`;
+  const lmsLoginUrl = `https://${lmsHost}/login/index.php`;
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setFormError(null);
+    setFormErrorCode(null);
     setFieldErrors({});
 
     const nextFieldErrors: Record<string, string> = {};
-    const trimmedReg = registerNumber.trim();
-    const trimmedErp = erpToken.trim();
-    const trimmedLms = lmsToken.trim();
-    const resolvedErpUsername = (erpUsername.trim() || trimmedReg).trim();
-    const effectiveLmsUsername = sameAsErp
-      ? resolvedErpUsername
-      : (lmsUsername.trim() || trimmedReg).trim();
-    const effectiveLmsPassword = sameAsErp ? erpPassword : lmsPassword;
-    const wantsErpAuto = liveAuthMethod === 'auto-login' && Boolean(erpPassword || erpUsername.trim());
-    const wantsLmsAuto =
-      liveAuthMethod === 'auto-login' &&
-      (sameAsErp ? Boolean(erpPassword) : Boolean(effectiveLmsPassword || lmsUsername.trim()));
+    const rawReg = registerNumber.trim();
+    const trimmedErpToken = erpToken.trim();
+    const trimmedLmsToken = lmsToken.trim();
+    const rawLmsUser = lmsUsername.trim();
+    const rawErpUser = erpUsername.trim();
 
-    if (!trimmedReg || !/^[A-Za-z0-9]{6,14}$/.test(trimmedReg)) {
+    // Auto-infer register number if the student typed it directly into ERP or Moodle username
+    const inferredReg =
+      rawReg ||
+      (/^[A-Za-z0-9]{6,14}$/.test(rawErpUser) ? rawErpUser : '') ||
+      (/^[A-Za-z0-9]{6,14}$/.test(rawLmsUser) ? rawLmsUser : '');
+
+    const resolvedLmsUsername = (rawLmsUser || inferredReg).trim();
+    const resolvedErpUsername = sameAsMoodle ? resolvedLmsUsername : (rawErpUser || inferredReg).trim();
+    const effectiveErpPassword = sameAsMoodle ? lmsPassword : erpPassword;
+
+    const wantsLmsAuto = liveAuthMethod === 'auto-login' && Boolean(lmsPassword || rawLmsUser);
+    const wantsErpAuto =
+      liveAuthMethod === 'auto-login' &&
+      erpInputMode === 'password' &&
+      (sameAsMoodle ? Boolean(lmsPassword) : Boolean(effectiveErpPassword || rawErpUser));
+    const wantsErpToken =
+      (liveAuthMethod === 'direct-website' || (liveAuthMethod === 'auto-login' && erpInputMode === 'token')) &&
+      Boolean(trimmedErpToken);
+    const wantsLmsToken = liveAuthMethod === 'direct-website' && Boolean(trimmedLmsToken);
+
+    if (!inferredReg || !/^[A-Za-z0-9]{6,14}$/.test(inferredReg)) {
       nextFieldErrors.registerNumber = 'Enter a valid Register Number (6–14 letters or digits).';
     }
     if (mode === 'live') {
       if (liveAuthMethod === 'auto-login') {
-        if (!wantsErpAuto && !wantsLmsAuto) {
-          nextFieldErrors.erpPassword = 'Enter your ERP password, Moodle LMS password, or both.';
+        if (!wantsLmsAuto && !wantsErpAuto && !wantsErpToken) {
+          nextFieldErrors.lmsPassword =
+            'Enter your Moodle LMS password, paste your ERP Access-Token, or enter ERP credentials.';
         }
-        if (wantsErpAuto && !erpPassword) {
-          nextFieldErrors.erpPassword = 'Enter your College ERP password.';
-        }
-        if (wantsLmsAuto && !effectiveLmsPassword) {
+        if (wantsLmsAuto && !lmsPassword) {
           nextFieldErrors.lmsPassword = 'Enter your Moodle LMS password.';
         }
-      } else {
-        if (!trimmedErp && !trimmedLms) {
-          nextFieldErrors.lmsToken = 'Paste your Moodle LMS token or ERP session token (at least one is required).';
+        if (wantsErpAuto && !effectiveErpPassword) {
+          nextFieldErrors.erpPassword = 'Enter your College ERP password.';
         }
-        if (trimmedLms && trimmedLms.length < 8) {
+        if (wantsErpToken && trimmedErpToken.length < 8) {
+          nextFieldErrors.erpToken = 'ERP Access-Token must be at least 8 characters.';
+        }
+      } else {
+        if (!wantsErpToken && !wantsLmsToken) {
+          nextFieldErrors.lmsToken =
+            'Paste your Moodle LMS token or ERP Access-Token (at least one is required to sync).';
+        }
+        if (wantsLmsToken && trimmedLmsToken.length < 8) {
           nextFieldErrors.lmsToken = 'Moodle LMS token must be at least 8 characters.';
         }
-        if (trimmedErp && trimmedErp.length < 8) {
-          nextFieldErrors.erpToken = 'ERP session token must be at least 8 characters.';
+        if (wantsErpToken && trimmedErpToken.length < 8) {
+          nextFieldErrors.erpToken = 'ERP Access-Token must be at least 8 characters.';
         }
       }
     }
@@ -106,22 +134,23 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
 
     try {
       const res = await api.login({
-        registerNumber: trimmedReg,
+        registerNumber: inferredReg,
         name: name.trim() || undefined,
         mode,
-        erpToken: mode === 'live' && liveAuthMethod === 'tokens' && trimmedErp ? trimmedErp : undefined,
+        erpToken: mode === 'live' && wantsErpToken ? trimmedErpToken : undefined,
         erpUsername: mode === 'live' && wantsErpAuto ? resolvedErpUsername : undefined,
-        erpPassword: mode === 'live' && wantsErpAuto ? erpPassword : undefined,
-        lmsToken: mode === 'live' && liveAuthMethod === 'tokens' && trimmedLms ? trimmedLms : undefined,
-        lmsUsername: mode === 'live' && wantsLmsAuto ? effectiveLmsUsername : undefined,
-        lmsPassword: mode === 'live' && wantsLmsAuto ? effectiveLmsPassword : undefined,
+        erpPassword: mode === 'live' && wantsErpAuto ? effectiveErpPassword : undefined,
+        lmsToken: mode === 'live' && wantsLmsToken ? trimmedLmsToken : undefined,
+        lmsUsername: mode === 'live' && wantsLmsAuto ? resolvedLmsUsername : undefined,
+        lmsPassword: mode === 'live' && wantsLmsAuto ? lmsPassword : undefined,
       });
       setErpPassword('');
       setLmsPassword('');
-      onSignedIn(res.user);
+      onSignedIn(res.user, res.warning);
     } catch (err) {
-      const eObj = err as Error & { fieldErrors?: Record<string, string> };
+      const eObj = err as Error & { code?: string; fieldErrors?: Record<string, string> };
       setFormError(eObj.message || 'Sign in failed.');
+      setFormErrorCode(eObj.code ?? null);
       if (eObj.fieldErrors) setFieldErrors(eObj.fieldErrors);
     } finally {
       setSubmitting(false);
@@ -134,10 +163,17 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
     setName('Arjun Subramanian');
     setFieldErrors({});
     setFormError(null);
+    setFormErrorCode(null);
   }
 
-  const lmsHost = liveAdapters?.lmsHost ?? 'sathyabama.cognibot.in';
-  const erpHost = liveAdapters?.erpHost ?? 'erp.sathyabama.ac.in';
+  function switchToErpTokenPaste() {
+    setLiveAuthMethod('auto-login');
+    setErpInputMode('token');
+    setFieldErrors({});
+    setFormError(null);
+    setFormErrorCode(null);
+    window.setTimeout(() => erpTokenInputRef.current?.focus(), 50);
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
@@ -176,7 +212,7 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
               One dashboard for attendance, CGPA, and deadlines.
             </h1>
             <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-400">
-              Sign in live with your Sathyabama Moodle LMS account or browser session tokens, or explore instantly with sample student data. Passwords are never saved; only verified tokens are encrypted in an HttpOnly cookie.
+              Sign in live to sync your Sathyabama Moodle LMS and College ERP, open the official portals directly, or explore instantly with sample student data. Passwords are never saved; only verified tokens are encrypted in an HttpOnly cookie.
             </p>
             <ul className="space-y-2.5 pt-2 text-sm text-slate-700 dark:text-slate-300 border-t border-slate-200 dark:border-slate-800">
               <li>Per-subject bunk calculator with 75%, 80%, and 85% targets</li>
@@ -212,6 +248,7 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                   setMode('mock');
                   setFieldErrors({});
                   setFormError(null);
+                  setFormErrorCode(null);
                 }}
                 className={`rounded-md px-3 py-2 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
                   mode === 'mock'
@@ -229,6 +266,7 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                   setMode('live');
                   setFieldErrors({});
                   setFormError(null);
+                  setFormErrorCode(null);
                 }}
                 className={`rounded-md px-3 py-2 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
                   mode === 'live'
@@ -244,9 +282,29 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
               {formError ? (
                 <div
                   role="alert"
-                  className="rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 px-3.5 py-2.5 text-xs text-red-800 dark:text-red-300"
+                  className="rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 px-3.5 py-3 text-xs text-red-800 dark:text-red-300 space-y-2.5"
                 >
-                  {formError}
+                  <p className="leading-relaxed">{formError}</p>
+                  {formErrorCode === 'erp_browser_login_required' ? (
+                    <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                      <a
+                        href={erpLoginUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-md bg-red-700 hover:bg-red-800 dark:bg-red-600 dark:hover:bg-red-500 px-3 py-1.5 text-xs font-medium text-white transition-colors"
+                      >
+                        Sign in on {erpHost}
+                        <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+                      </a>
+                      <button
+                        type="button"
+                        onClick={switchToErpTokenPaste}
+                        className="inline-flex items-center rounded-md border border-red-300 dark:border-red-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-red-800 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors cursor-pointer"
+                      >
+                        Paste ERP Access-Token instead
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -259,7 +317,7 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                       ) : (
                         <Info className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400 shrink-0" aria-hidden="true" />
                       )}
-                      <span>Live Portals Ready</span>
+                      <span>Official Sathyabama Portals</span>
                     </div>
                     <button
                       type="button"
@@ -267,7 +325,7 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                       aria-expanded={showTokenGuide}
                       className="inline-flex items-center gap-1 text-blue-700 dark:text-blue-400 font-medium hover:underline cursor-pointer"
                     >
-                      Where to find tokens
+                      How sync works
                       <ChevronDown
                         className={`h-3.5 w-3.5 transition-transform ${showTokenGuide ? 'rotate-180' : ''}`}
                         aria-hidden="true"
@@ -275,46 +333,34 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                     </button>
                   </div>
 
-                  <div className="space-y-1 text-slate-600 dark:text-slate-400">
-                    <div className="flex items-center justify-between gap-2">
-                      <span>Moodle LMS</span>
-                      <a
-                        href={`https://${lmsHost}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 font-mono text-slate-800 dark:text-slate-200 hover:text-blue-700 dark:hover:text-blue-400 truncate"
-                      >
-                        {lmsHost}
-                        <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
-                      </a>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span>College ERP</span>
-                      <a
-                        href={`https://${erpHost}/account/login`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 font-mono text-slate-800 dark:text-slate-200 hover:text-blue-700 dark:hover:text-blue-400 truncate"
-                      >
-                        {erpHost}
-                        <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
-                      </a>
-                    </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <a
+                      href={erpLoginUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center justify-between gap-2 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-200 hover:border-blue-300 dark:hover:border-blue-700 hover:text-blue-700 dark:hover:text-blue-400 transition-colors"
+                    >
+                      <span className="truncate">Sign in on College ERP</span>
+                      <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    </a>
+                    <a
+                      href={lmsLoginUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center justify-between gap-2 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-200 hover:border-blue-300 dark:hover:border-blue-700 hover:text-blue-700 dark:hover:text-blue-400 transition-colors"
+                    >
+                      <span className="truncate">Sign in on Moodle LMS</span>
+                      <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    </a>
                   </div>
 
                   {showTokenGuide ? (
                     <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-1.5 text-slate-600 dark:text-slate-400 leading-relaxed">
                       <p>
-                        <strong className="text-slate-800 dark:text-slate-200">Moodle LMS:</strong> Use{' '}
-                        <em>Moodle Login</em> below to fetch your token automatically, or sign in at{' '}
-                        <span className="font-mono">{lmsHost}</span> → Profile → <em>Preferences</em> →{' '}
-                        <em>Security keys</em> → copy <strong>Moodle mobile web service</strong>.
+                        <strong className="text-slate-800 dark:text-slate-200">Moodle LMS ({lmsHost}):</strong> Supports direct Auto Sign-In below using your Moodle username and password, or copy your security key from <em>Profile → Preferences → Security keys</em>.
                       </p>
                       <p>
-                        <strong className="text-slate-800 dark:text-slate-200">College ERP:</strong> Sign in at{' '}
-                        <span className="font-mono">{erpHost}</span>, press <span className="font-mono">F12</span> →{' '}
-                        <em>Application → Local Storage</em> → copy <span className="font-mono">Access-Token</span>{' '}
-                        (or copy <span className="font-mono">Authorization</span> from the <em>Network</em> tab).
+                        <strong className="text-slate-800 dark:text-slate-200">College ERP ({erpHost}):</strong> Blocks external password sign-in for security. Click <em>Sign in on College ERP</em> above, log in normally, press <span className="font-mono">F12</span> → <em>Application → Local Storage</em> → copy <span className="font-mono">Access-Token</span>, and paste it below to sync attendance, timetable, and CGPA.
                       </p>
                       <button
                         type="button"
@@ -372,7 +418,7 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                 </div>
               ) : (
                 <>
-                  <div className="flex items-center justify-between gap-2 pt-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                     <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
                       Live Sign-In Method
                     </span>
@@ -387,194 +433,329 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                           setLiveAuthMethod('auto-login');
                           setFieldErrors({});
                           setFormError(null);
+                          setFormErrorCode(null);
                         }}
-                        className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
+                        className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
                           liveAuthMethod === 'auto-login'
                             ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-50 shadow-xs'
                             : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                         }`}
                       >
-                        Auto ERP + LMS Login
+                        Auto Sign-In &amp; Sync
                       </button>
                       <button
                         type="button"
                         onClick={() => {
-                          setLiveAuthMethod('tokens');
+                          setLiveAuthMethod('direct-website');
                           setFieldErrors({});
                           setFormError(null);
+                          setFormErrorCode(null);
                         }}
-                        className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
-                          liveAuthMethod === 'tokens'
+                        className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                          liveAuthMethod === 'direct-website'
                             ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-50 shadow-xs'
                             : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                         }`}
                       >
-                        Paste Tokens
+                        Direct Website &amp; Tokens
                       </button>
                     </div>
                   </div>
 
                   {liveAuthMethod === 'auto-login' ? (
                     <div className="space-y-3.5">
-                      {/* College ERP Credentials */}
+                      {/* Moodle LMS Auto-Login (works directly via sathyabama.cognibot.in/login/token.php) */}
                       <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/50 p-3.5 space-y-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                            College ERP ({erpHost})
-                          </span>
-                          <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                            Attendance, Timetable &amp; CGPA
-                          </span>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                              Moodle LMS ({lmsHost})
+                            </span>
+                            <span className="ml-2 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+                              Auto-login supported
+                            </span>
+                          </div>
+                          <a
+                            href={lmsLoginUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 dark:text-blue-400 hover:underline"
+                          >
+                            Open website
+                            <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+                          </a>
                         </div>
+
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div>
                             <label
-                              htmlFor="erpUsername"
+                              htmlFor="lmsUsername"
                               className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                             >
-                              ERP Username
+                              Moodle Username
                             </label>
                             <input
-                              id="erpUsername"
-                              name="erpUsername"
+                              id="lmsUsername"
+                              name="lmsUsername"
                               type="text"
                               autoComplete="username"
-                              value={erpUsername}
-                              onChange={(e) => setErpUsername(e.target.value)}
-                              placeholder={registerNumber.trim() || 'Same as Register Number'}
-                              aria-invalid={Boolean(fieldErrors.erpUsername)}
+                              value={lmsUsername}
+                              onChange={(e) => setLmsUsername(e.target.value)}
+                              placeholder={registerNumber.trim() || 'Reg no. or college email'}
+                              aria-invalid={Boolean(fieldErrors.lmsUsername)}
                               className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                             />
-                            {fieldErrors.erpUsername ? (
-                              <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.erpUsername}</p>
+                            {fieldErrors.lmsUsername ? (
+                              <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.lmsUsername}</p>
                             ) : null}
                           </div>
                           <div>
                             <label
-                              htmlFor="erpPassword"
+                              htmlFor="lmsPassword"
                               className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                             >
-                              ERP Password
+                              Moodle Password
                             </label>
                             <input
-                              id="erpPassword"
-                              name="erpPassword"
+                              id="lmsPassword"
+                              name="lmsPassword"
                               type="password"
                               autoComplete="current-password"
-                              value={erpPassword}
-                              onChange={(e) => setErpPassword(e.target.value)}
+                              value={lmsPassword}
+                              onChange={(e) => setLmsPassword(e.target.value)}
                               placeholder="Never stored"
-                              aria-invalid={Boolean(fieldErrors.erpPassword)}
+                              aria-invalid={Boolean(fieldErrors.lmsPassword)}
                               className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                             />
-                            {fieldErrors.erpPassword ? (
-                              <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.erpPassword}</p>
+                            {fieldErrors.lmsPassword ? (
+                              <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.lmsPassword}</p>
                             ) : null}
                           </div>
                         </div>
                       </div>
 
-                      {/* Moodle LMS Credentials */}
+                      {/* College ERP (Direct Website Token recommended, Password optional) */}
                       <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/50 p-3.5 space-y-3">
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                            Moodle LMS ({lmsHost})
-                          </span>
-                          <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400 cursor-pointer select-none">
-                            <input
-                              type="checkbox"
-                              checked={sameAsErp}
-                              onChange={(e) => setSameAsErp(e.target.checked)}
-                              className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-600"
-                            />
-                            Same as ERP login
-                          </label>
+                          <div className="min-w-0">
+                            <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                              College ERP ({erpHost})
+                            </span>
+                            <span className="ml-2 text-[11px] text-slate-500 dark:text-slate-400">
+                              Attendance, Timetable &amp; CGPA
+                            </span>
+                          </div>
+                          <div
+                            role="group"
+                            aria-label="College ERP sign-in method"
+                            className="inline-flex rounded-md border border-slate-200 dark:border-slate-700 p-0.5 bg-white dark:bg-slate-900"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setErpInputMode('token');
+                                setFieldErrors({});
+                                setFormError(null);
+                                setFormErrorCode(null);
+                              }}
+                              className={`rounded px-2 py-0.5 text-[11px] font-medium transition-colors cursor-pointer ${
+                                erpInputMode === 'token'
+                                  ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-50'
+                                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                              }`}
+                            >
+                              ERP Token
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setErpInputMode('password');
+                                setFieldErrors({});
+                                setFormError(null);
+                                setFormErrorCode(null);
+                              }}
+                              className={`rounded px-2 py-0.5 text-[11px] font-medium transition-colors cursor-pointer ${
+                                erpInputMode === 'password'
+                                  ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-50'
+                                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                              }`}
+                            >
+                              ERP Password
+                            </button>
+                          </div>
                         </div>
-                        {sameAsErp ? (
-                          <p className="text-xs text-slate-500 dark:text-slate-400">
-                            Will automatically sign in to Moodle LMS using your ERP username and password above.
-                          </p>
-                        ) : (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+
+                        {erpInputMode === 'token' ? (
+                          <div className="space-y-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-400">
+                              <span>
+                                Sathyabama ERP requires browser sign-in on its official site before syncing.
+                              </span>
+                              <a
+                                href={erpLoginUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 font-medium text-blue-700 dark:text-blue-400 hover:underline shrink-0"
+                              >
+                                Sign in on {erpHost}
+                                <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+                              </a>
+                            </div>
                             <div>
                               <label
-                                htmlFor="lmsUsername"
+                                htmlFor="autoErpToken"
                                 className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                               >
-                                Moodle Username
+                                ERP Access-Token (optional if syncing Moodle first)
                               </label>
                               <input
-                                id="lmsUsername"
-                                name="lmsUsername"
-                                type="text"
-                                autoComplete="username"
-                                value={lmsUsername}
-                                onChange={(e) => setLmsUsername(e.target.value)}
-                                placeholder={registerNumber.trim() || 'Reg no. or college email'}
-                                aria-invalid={Boolean(fieldErrors.lmsUsername)}
+                                ref={erpTokenInputRef}
+                                id="autoErpToken"
+                                name="erpToken"
+                                type="password"
+                                value={erpToken}
+                                onChange={(e) => setErpToken(e.target.value)}
+                                placeholder="Paste Access-Token from erp.sathyabama.ac.in Local Storage"
+                                aria-invalid={Boolean(fieldErrors.erpToken)}
                                 className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                               />
-                              {fieldErrors.lmsUsername ? (
-                                <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.lmsUsername}</p>
+                              {fieldErrors.erpToken ? (
+                                <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.erpToken}</p>
                               ) : null}
                             </div>
-                            <div>
-                              <label
-                                htmlFor="lmsPassword"
-                                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-                              >
-                                Moodle Password
+                          </div>
+                        ) : (
+                          <div className="space-y-2.5">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={sameAsMoodle}
+                                  onChange={(e) => setSameAsMoodle(e.target.checked)}
+                                  className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-600"
+                                />
+                                Same as Moodle login
                               </label>
-                              <input
-                                id="lmsPassword"
-                                name="lmsPassword"
-                                type="password"
-                                autoComplete="current-password"
-                                value={lmsPassword}
-                                onChange={(e) => setLmsPassword(e.target.value)}
-                                placeholder="Never stored"
-                                aria-invalid={Boolean(fieldErrors.lmsPassword)}
-                                className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
-                              />
-                              {fieldErrors.lmsPassword ? (
-                                <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.lmsPassword}</p>
-                              ) : null}
+                              <a
+                                href={erpLoginUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 dark:text-blue-400 hover:underline"
+                              >
+                                Sign in on {erpHost}
+                                <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+                              </a>
                             </div>
+
+                            {sameAsMoodle ? (
+                              <p className="text-xs text-slate-500 dark:text-slate-400">
+                                Will attempt ERP sign-in with your Moodle username and password above. If {erpHost} requires direct browser sign-in, Moodle LMS will still connect and sync.
+                              </p>
+                            ) : (
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                  <label
+                                    htmlFor="erpUsername"
+                                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                                  >
+                                    ERP Username
+                                  </label>
+                                  <input
+                                    id="erpUsername"
+                                    name="erpUsername"
+                                    type="text"
+                                    autoComplete="username"
+                                    value={erpUsername}
+                                    onChange={(e) => setErpUsername(e.target.value)}
+                                    placeholder={registerNumber.trim() || 'Same as Register Number'}
+                                    aria-invalid={Boolean(fieldErrors.erpUsername)}
+                                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+                                  />
+                                  {fieldErrors.erpUsername ? (
+                                    <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.erpUsername}</p>
+                                  ) : null}
+                                </div>
+                                <div>
+                                  <label
+                                    htmlFor="erpPassword"
+                                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                                  >
+                                    ERP Password
+                                  </label>
+                                  <input
+                                    id="erpPassword"
+                                    name="erpPassword"
+                                    type="password"
+                                    autoComplete="current-password"
+                                    value={erpPassword}
+                                    onChange={(e) => setErpPassword(e.target.value)}
+                                    placeholder="Never stored"
+                                    aria-invalid={Boolean(fieldErrors.erpPassword)}
+                                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+                                  />
+                                  {fieldErrors.erpPassword ? (
+                                    <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.erpPassword}</p>
+                                  ) : null}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
                     </div>
                   ) : (
-                    <>
-                      <div>
-                        <label
-                          htmlFor="lmsToken"
-                          className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5"
-                        >
-                          Moodle LMS Web-Service Token
-                        </label>
+                    <div className="space-y-3.5">
+                      <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/50 p-3.5 space-y-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <label
+                            htmlFor="lmsToken"
+                            className="text-xs font-semibold text-slate-800 dark:text-slate-200"
+                          >
+                            Moodle LMS Web-Service Token
+                          </label>
+                          <a
+                            href={lmsLoginUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 dark:text-blue-400 hover:underline"
+                          >
+                            Sign in on {lmsHost}
+                            <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+                          </a>
+                        </div>
                         <input
                           id="lmsToken"
                           name="lmsToken"
                           type="password"
                           value={lmsToken}
                           onChange={(e) => setLmsToken(e.target.value)}
-                          placeholder="Paste your Moodle web-service token"
+                          placeholder="Paste your Moodle mobile web service key"
                           aria-invalid={Boolean(fieldErrors.lmsToken)}
-                          className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3.5 py-2.5 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+                          className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3.5 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                         />
                         {fieldErrors.lmsToken ? (
-                          <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.lmsToken}</p>
+                          <p className="text-xs text-red-700 dark:text-red-400">{fieldErrors.lmsToken}</p>
                         ) : null}
                       </div>
 
-                      <div>
-                        <label
-                          htmlFor="erpToken"
-                          className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5"
-                        >
-                          ERP Session Token (adds live attendance &amp; grades)
-                        </label>
+                      <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/50 p-3.5 space-y-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <label
+                            htmlFor="erpToken"
+                            className="text-xs font-semibold text-slate-800 dark:text-slate-200"
+                          >
+                            College ERP Access-Token (attendance, timetable &amp; CGPA)
+                          </label>
+                          <a
+                            href={erpLoginUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 dark:text-blue-400 hover:underline"
+                          >
+                            Sign in on {erpHost}
+                            <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+                          </a>
+                        </div>
                         <input
                           id="erpToken"
                           name="erpToken"
@@ -583,13 +764,13 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                           onChange={(e) => setErpToken(e.target.value)}
                           placeholder="Paste ERP Access-Token, Bearer JWT, or session cookie"
                           aria-invalid={Boolean(fieldErrors.erpToken)}
-                          className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3.5 py-2.5 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+                          className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3.5 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                         />
                         {fieldErrors.erpToken ? (
-                          <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.erpToken}</p>
+                          <p className="text-xs text-red-700 dark:text-red-400">{fieldErrors.erpToken}</p>
                         ) : null}
                       </div>
-                    </>
+                    </div>
                   )}
                 </>
               )}
@@ -616,10 +797,10 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                 >
                   {submitting
                     ? mode === 'live'
-                      ? 'Connecting live...'
+                      ? 'Syncing live...'
                       : 'Signing in...'
                     : mode === 'live'
-                      ? 'Connect Live'
+                      ? 'Connect & Sync Live'
                       : 'Open Dashboard'}
                 </button>
               </div>
@@ -631,3 +812,4 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
     </div>
   );
 }
+

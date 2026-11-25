@@ -91,14 +91,22 @@ test('exchangeErpCredentialsForToken posts JSON credentials and extracts Sathyab
   await assert.rejects(
     () =>
       exchangeErpCredentialsForToken('42110482', 'wrong', {
-        fetchImpl: async () => jsonResponse({ status: 0, message: 'Turnstile captcha verification failed' }),
+        fetchImpl: async () =>
+          jsonResponse(
+            {
+              success: false,
+              message: 'Warning: This is not an official ERP portal.',
+            },
+            403
+          ),
         env: { ERP_BASE_URL: 'https://erp.sathyabama.ac.in' },
       }),
     (err: unknown) =>
       err instanceof LiveUpstreamError &&
-      err.status === 401 &&
+      err.status === 403 &&
+      err.code === 'erp_browser_login_required' &&
       err.field === 'erpPassword' &&
-      /browser verification/i.test(err.message)
+      /Sign in directly on erp\.sathyabama\.ac\.in/i.test(err.message)
   );
 });
 

@@ -36,7 +36,14 @@ export interface ConnectPortalsInput {
 
 export interface LoginErrorResponse {
   error: string;
+  code?: string;
   fieldErrors?: Record<string, string>;
+}
+
+export interface AuthSessionResponse {
+  authenticated: boolean;
+  user: SessionUser;
+  warning?: string;
 }
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -53,9 +60,11 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     const err = new Error((payload as { error?: string } | null)?.error || `Request failed (${res.status})`) as Error & {
       status?: number;
+      code?: string;
       fieldErrors?: Record<string, string>;
     };
     err.status = res.status;
+    err.code = (payload as LoginErrorResponse | null)?.code;
     err.fieldErrors = (payload as LoginErrorResponse | null)?.fieldErrors;
     throw err;
   }
@@ -71,7 +80,7 @@ export const api = {
   },
 
   login(input: LoginInput) {
-    return requestJson<{ authenticated: boolean; user: SessionUser }>('/api/auth/login', {
+    return requestJson<AuthSessionResponse>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify(input),
     });
@@ -82,7 +91,7 @@ export const api = {
   },
 
   connectPortals(input: ConnectPortalsInput) {
-    return requestJson<{ authenticated: boolean; user: SessionUser }>('/api/auth/connect', {
+    return requestJson<AuthSessionResponse>('/api/auth/connect', {
       method: 'POST',
       body: JSON.stringify(input),
     });

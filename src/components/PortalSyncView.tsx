@@ -42,7 +42,7 @@ interface PortalSyncViewProps {
 
 type PortalConnectMethod = 'credentials' | 'token';
 
-const MOODLE_URL = 'https://sathyabama.cognibot.in';
+const MOODLE_LOGIN_URL = 'https://sathyabama.cognibot.in/login/index.php';
 const ERP_URL = 'https://erp.sathyabama.ac.in/account/login';
 
 export function PortalSyncView({
@@ -61,7 +61,7 @@ export function PortalSyncView({
   onNavigate,
 }: PortalSyncViewProps) {
   const [moodleMethod, setMoodleMethod] = useState<PortalConnectMethod>('credentials');
-  const [erpMethod, setErpMethod] = useState<PortalConnectMethod>('credentials');
+  const [erpMethod, setErpMethod] = useState<PortalConnectMethod>('token');
   const [registerNumber, setRegisterNumber] = useState(user.registerNumber);
   const [lmsUsername, setLmsUsername] = useState('');
   const [lmsPassword, setLmsPassword] = useState('');
@@ -71,7 +71,9 @@ export function PortalSyncView({
   const [erpToken, setErpToken] = useState('');
   const [connecting, setConnecting] = useState(false);
   const [connectMessage, setConnectMessage] = useState<string | null>(null);
+  const [connectWarning, setConnectWarning] = useState<string | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
+  const [connectErrorCode, setConnectErrorCode] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const moodleConnectedLive = user.mode === 'live' && user.lmsTokenPresent;
@@ -80,7 +82,9 @@ export function PortalSyncView({
   async function handleConnectSubmit(e: FormEvent) {
     e.preventDefault();
     setConnectError(null);
+    setConnectErrorCode(null);
     setConnectMessage(null);
+    setConnectWarning(null);
     setFieldErrors({});
 
     const trimmedReg = registerNumber.trim();
@@ -143,9 +147,14 @@ export function PortalSyncView({
         .filter(Boolean)
         .join(' & ');
       setConnectMessage(`Connected ${connectedNames} and synced live data.`);
+      if (res.warning) {
+        setConnectWarning(res.warning);
+        setErpMethod('token');
+      }
     } catch (err) {
-      const eObj = err as Error & { fieldErrors?: Record<string, string> };
+      const eObj = err as Error & { code?: string; fieldErrors?: Record<string, string> };
       setConnectError(eObj.message || 'Unable to connect portal credentials.');
+      setConnectErrorCode(eObj.code ?? null);
       if (eObj.fieldErrors) setFieldErrors(eObj.fieldErrors);
     } finally {
       setConnecting(false);
@@ -248,7 +257,7 @@ export function PortalSyncView({
                   Sathyabama Moodle LMS
                 </p>
                 <a
-                  href={MOODLE_URL}
+                  href={MOODLE_LOGIN_URL}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1 font-mono text-xs text-slate-500 dark:text-slate-400 hover:text-blue-700 dark:hover:text-blue-400 mt-0.5"
@@ -285,6 +294,17 @@ export function PortalSyncView({
                   ? 'Syncs live assignment deadlines, course events, and Moodle notifications.'
                   : 'Connect with Moodle Login or your Moodle web-service token below to sync live LMS deadlines and notices.'}
             </p>
+            <div className="pt-1">
+              <a
+                href={MOODLE_LOGIN_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline"
+              >
+                Sign in directly on Moodle website
+                <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+              </a>
+            </div>
           </div>
 
           {/* College ERP Card */}
@@ -330,8 +350,19 @@ export function PortalSyncView({
                 ? lastReport.erp.message
                 : erpConnectedLive
                   ? 'Syncs live subject attendance, weekly timetable, semester CGPA results, and ERP circulars.'
-                  : 'Paste your ERP Access-Token from erp.sathyabama.ac.in below to sync live attendance, timetable, and CGPA.'}
+                  : 'Sign in directly on erp.sathyabama.ac.in and paste your Access-Token below to sync live attendance, timetable, and CGPA.'}
             </p>
+            <div className="pt-1">
+              <a
+                href={ERP_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline"
+              >
+                Sign in directly on ERP website
+                <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+              </a>
+            </div>
           </div>
         </div>
 
@@ -372,9 +403,34 @@ export function PortalSyncView({
           {connectError ? (
             <div
               role="alert"
-              className="rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 px-3.5 py-2.5 text-xs text-red-800 dark:text-red-300"
+              className="rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 px-3.5 py-3 text-xs text-red-800 dark:text-red-300 space-y-2.5"
             >
-              {connectError}
+              <p className="leading-relaxed">{connectError}</p>
+              {connectErrorCode === 'erp_browser_login_required' ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <a
+                    href={ERP_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-md bg-red-700 hover:bg-red-800 dark:bg-red-600 dark:hover:bg-red-500 px-3 py-1.5 text-xs font-medium text-white transition-colors"
+                  >
+                    Sign in on erp.sathyabama.ac.in
+                    <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErpMethod('token');
+                      setConnectError(null);
+                      setConnectErrorCode(null);
+                      setFieldErrors({});
+                    }}
+                    className="inline-flex items-center rounded-md border border-red-300 dark:border-red-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-red-800 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors cursor-pointer"
+                  >
+                    Switch to Paste ERP Token
+                  </button>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -385,6 +441,24 @@ export function PortalSyncView({
             >
               <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
               <span>{connectMessage}</span>
+            </div>
+          ) : null}
+
+          {connectWarning ? (
+            <div
+              role="status"
+              className="rounded-lg border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-xs text-amber-900 dark:text-amber-300 flex flex-wrap items-center justify-between gap-2.5"
+            >
+              <span className="leading-relaxed">{connectWarning}</span>
+              <a
+                href={ERP_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 font-medium text-amber-900 dark:text-amber-200 underline shrink-0"
+              >
+                Sign in on erp.sathyabama.ac.in
+                <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+              </a>
             </div>
           ) : null}
 

@@ -346,7 +346,11 @@ export async function exchangeMoodleCredentialsForToken(
     }
     if (typeof rec.error === 'string' && rec.error.trim().length > 0) {
       const code = typeof rec.errorcode === 'string' ? rec.errorcode : 'invalidlogin';
-      throw new LiveUpstreamError(401, `Moodle sign-in failed (${code}): ${rec.error.trim()}`, {
+      const friendlyMessage =
+        code === 'invalidlogin'
+          ? `Moodle LMS rejected that username or password on ${config.lmsHost}. Check your login or sign in directly on ${config.lmsHost}.`
+          : `Moodle sign-in failed (${code}): ${rec.error.trim()}`;
+      throw new LiveUpstreamError(401, friendlyMessage, {
         code,
         field: 'lmsPassword',
       });
@@ -432,12 +436,23 @@ export async function exchangeErpCredentialsForToken(
     );
   }
 
+  const browserLoginMessage = `Sathyabama ERP blocks automated password sign-in outside ${config.erpHost}. Sign in directly on ${config.erpHost} in your browser, then paste your Access-Token to sync attendance, timetable, and CGPA.`;
+
   const parsed = await readBoundedJson(res, 'College ERP').catch((err) => {
     if (!res.ok) {
+      if (res.status === 403 || res.status === 405) {
+        throw new LiveUpstreamError(403, browserLoginMessage, {
+          code: 'erp_browser_login_required',
+          field: 'erpPassword',
+        });
+      }
       throw new LiveUpstreamError(
-        res.status === 401 || res.status === 403 ? 401 : 502,
-        `College ERP login returned HTTP ${res.status}. If ERP requires browser captcha/OTP, sign in at ${config.erpHost} and use Paste Tokens.`,
-        { field: 'erpPassword' }
+        res.status === 401 ? 401 : 502,
+        `College ERP login returned HTTP ${res.status}. Sign in directly at ${config.erpHost} and paste your Access-Token.`,
+        {
+          code: res.status === 401 ? undefined : 'erp_browser_login_required',
+          field: 'erpPassword',
+        }
       );
     }
     throw err;
@@ -492,30 +507,50 @@ export async function exchangeErpCredentialsForToken(
           ? rec.error.trim()
           : null;
 
-    if (upstreamMsg) {
-      const needsTurnstile = /turnstile|captcha|bot|verify|otp/i.test(upstreamMsg);
-      throw new LiveUpstreamError(
-        401,
-        needsTurnstile
-          ? `College ERP requires browser verification (${upstreamMsg}). Sign in once at ${config.erpHost} and paste your Access-Token in the Paste Tokens tab.`
-          : `College ERP sign-in failed: ${upstreamMsg}`,
-        { field: 'erpPassword' }
-      );
+    const needsBrowserLogin =
+      res.status === 403 ||
+      res.status === 405 ||
+      (upstreamMsg !== null &&
+        /turnstile|captcha|bot|verify|otp|not an official erp portal|official erp|method not allowed/i.test(
+          upstreamMsg
+        ));
+
+    if (needsBrowserLogin) {
+      throw new LiveUpstreamError(403, browserLoginMessage, {
+        code: 'erp_browser_login_required',
+        field: 'erpPassword',
+      });
     }
+
+    if (upstreamMsg) {
+      throw new LiveUpstreamError(401, `College ERP sign-in failed: ${upstreamMsg}`, {
+        field: 'erpPassword',
+      });
+    }
+  }
+
+  if (res.status === 403 || res.status === 405) {
+    throw new LiveUpstreamError(403, browserLoginMessage, {
+      code: 'erp_browser_login_required',
+      field: 'erpPassword',
+    });
   }
 
   if (!res.ok) {
     throw new LiveUpstreamError(
-      res.status === 401 || res.status === 403 ? 401 : 502,
+      res.status === 401 ? 401 : 502,
       `College ERP login rejected credentials (HTTP ${res.status}).`,
-      { field: 'erpPassword' }
+      {
+        code: res.status === 401 ? undefined : 'erp_browser_login_required',
+        field: 'erpPassword',
+      }
     );
   }
 
   throw new LiveUpstreamError(
     502,
-    `College ERP did not return an access token. If ${config.erpHost} requires browser captcha/OTP, sign in there and use Paste Tokens.`,
-    { field: 'erpPassword' }
+    `College ERP did not return an access token. Sign in directly at ${config.erpHost} and paste your Access-Token.`,
+    { code: 'erp_browser_login_required', field: 'erpPassword' }
   );
 }
 
