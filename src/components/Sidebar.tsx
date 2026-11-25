@@ -139,7 +139,16 @@ export function Sidebar({
             {profile?.name ?? user.name}
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums truncate">
-            {user.registerNumber} · {profile ? `Sem ${profile.semester}` : user.mode}
+            {user.registerNumber}
+            {' · '}
+            {user.erpRole === 'staff'
+              ? 'Staff'
+              : user.erpRole === 'new-admission'
+                ? 'New Admission'
+                : user.erpRole === 'parent'
+                  ? 'Parent'
+                  : 'Student'}
+            {profile && user.erpRole !== 'staff' ? ` · Sem ${profile.semester}` : ''}
           </p>
         </div>
         <button

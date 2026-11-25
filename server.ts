@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import path from 'node:path';
 import express from 'express';
+import { getTodayLocalDateKey, normalizeAttendanceEndDate } from './src/core/attendance';
 import { TwoTierCache } from './src/core/cache';
 import { LiveUpstreamError } from './src/core/liveParsers';
 import {
@@ -14,6 +15,7 @@ import {
 import type {
   DataOrigin,
   DataSourceMode,
+  ErpUserRole,
   HealthCheckItem,
   HealthReport,
   PortalSyncReport,
@@ -59,6 +61,14 @@ const PORT = Number(process.env.PORT) || 3000;
 const DEFAULT_MODE: DataSourceMode = process.env.DATA_SOURCE === 'live' ? 'live' : 'mock';
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_TOKEN_LENGTH = 1500;
+const PORTAL_ID_REGEX = /^[A-Za-z0-9_-]{4,20}$/;
+
+function parseErpRole(raw: unknown): ErpUserRole {
+  if (raw === 'staff' || raw === 'new-admission' || raw === 'parent' || raw === 'student') {
+    return raw;
+  }
+  return 'student';
+}
 
 const cache = new TwoTierCache();
 
@@ -296,6 +306,7 @@ export function createApp() {
       return;
     }
     const mode: DataSourceMode = body.mode === 'live' ? 'live' : 'mock';
+    const erpRole: ErpUserRole = parseErpRole(body.erpRole);
     let erpToken = typeof body.erpToken === 'string' ? body.erpToken.trim() : '';
     const erpUsername = typeof body.erpUsername === 'string' ? body.erpUsername.trim() : '';
     const erpPassword = typeof body.erpPassword === 'string' ? body.erpPassword : '';
@@ -308,9 +319,14 @@ export function createApp() {
 
     const fieldErrors: Record<string, string> = {};
     if (!registerNumber) {
-      fieldErrors.registerNumber = 'Enter your Sathyabama register number (e.g. 42110482).';
-    } else if (!/^[A-Za-z0-9]{6,14}$/.test(registerNumber)) {
-      fieldErrors.registerNumber = 'Register number must be 6–14 letters or digits without spaces.';
+      fieldErrors.registerNumber =
+        erpRole === 'staff'
+          ? 'Enter your Sathyabama staff number (e.g. STF1042).'
+          : erpRole === 'new-admission'
+            ? 'Enter your admission or register number.'
+            : 'Enter your Sathyabama register number (e.g. 42110482).';
+    } else if (!PORTAL_ID_REGEX.test(registerNumber)) {
+      fieldErrors.registerNumber = 'ID must be 4–20 letters, digits, hyphens, or underscores without spaces.';
     }
 
     if (mode === 'live') {
@@ -378,7 +394,9 @@ export function createApp() {
         if (!erpToken && usingErpCreds) {
           try {
             // Exchange ERP username/password once for an access token; password is never persisted.
-            const erpAuth = await exchangeErpCredentialsForToken(erpUsername || registerNumber, erpPassword);
+            const erpAuth = await exchangeErpCredentialsForToken(erpUsername || registerNumber, erpPassword, {
+              role: erpRole,
+            });
             erpToken = erpAuth.token;
             verifiedErpName = erpAuth.studentName ?? null;
             verifiedErpStudentId = erpAuth.studentId;
@@ -420,6 +438,7 @@ export function createApp() {
           registerNumber: registerNumber.toUpperCase(),
           name: resolvedName,
           mode: 'live',
+          erpRole,
           erpToken: erpToken || undefined,
           erpStudentId: verifiedErpStudentId,
           lmsToken: lmsToken || undefined,
@@ -443,11 +462,12 @@ export function createApp() {
       }
     }
 
-    const profile = buildMockProfile(registerNumber, displayName || undefined);
+    const profile = buildMockProfile(registerNumber, displayName || undefined, erpRole);
     const stored = writeSessionCookie(req, res, {
       registerNumber: profile.registerNumber,
       name: profile.name,
       mode: 'mock',
+      erpRole,
       erpToken: 'mock-erp-session',
       lmsToken: 'mock-lms-token',
     });
@@ -484,6 +504,7 @@ export function createApp() {
     }
 
     const body = (req.body ?? {}) as Record<string, unknown>;
+    const erpRole: ErpUserRole = body.erpRole ? parseErpRole(body.erpRole) : (session.erpRole ?? 'student');
     const nextRegRaw =
       typeof body.registerNumber === 'string' && body.registerNumber.trim()
         ? body.registerNumber.trim()
@@ -499,8 +520,8 @@ export function createApp() {
     const usingMoodleCreds = Boolean(lmsUsername || lmsPassword);
 
     const fieldErrors: Record<string, string> = {};
-    if (!/^[A-Za-z0-9]{6,14}$/.test(nextRegRaw)) {
-      fieldErrors.registerNumber = 'Register number must be 6–14 letters or digits without spaces.';
+    if (!PORTAL_ID_REGEX.test(nextRegRaw)) {
+      fieldErrors.registerNumber = 'ID must be 4–20 letters, digits, hyphens, or underscores without spaces.';
     }
     if (!incomingErpToken && !usingErpCreds && !incomingLmsToken && !usingMoodleCreds) {
       fieldErrors.lmsToken = 'Provide Moodle LMS or College ERP credentials/tokens to connect.';
@@ -558,7 +579,9 @@ export function createApp() {
 
       if (!incomingErpToken && usingErpCreds) {
         try {
-          const erpAuth = await exchangeErpCredentialsForToken(erpUsername || nextRegisterNumber, erpPassword);
+          const erpAuth = await exchangeErpCredentialsForToken(erpUsername || nextRegisterNumber, erpPassword, {
+            role: erpRole,
+          });
           incomingErpToken = erpAuth.token;
           verifiedErpName = erpAuth.studentName ?? null;
           verifiedErpStudentId = erpAuth.studentId;
@@ -608,6 +631,7 @@ export function createApp() {
         registerNumber: nextRegisterNumber,
         name: resolvedName,
         mode: 'live',
+        erpRole,
         erpToken: finalErpToken || undefined,
         erpStudentId: verifiedErpStudentId ?? (session.mode === 'live' ? session.erpStudentId : undefined),
         lmsToken: finalLmsToken || undefined,
@@ -637,6 +661,12 @@ export function createApp() {
       return;
     }
 
+    const syncBody = (req.body ?? {}) as Record<string, unknown>;
+    const rawSyncEndDate = typeof syncBody.endDate === 'string' ? syncBody.endDate.trim() : undefined;
+    const effectiveEndDate = normalizeAttendanceEndDate(rawSyncEndDate);
+    const todayKey = getTodayLocalDateKey();
+    const attendanceCacheKey = effectiveEndDate === todayKey ? 'attendance' : `attendance:${effectiveEndDate}`;
+
     const userHash = TwoTierCache.hashUserKey(
       JSON.stringify([session.registerNumber, session.name, session.exp])
     );
@@ -646,6 +676,7 @@ export function createApp() {
 
     type SectionSpec<T> = {
       section: PortalSyncSectionResult['section'];
+      cacheKey?: string;
       label: string;
       source: DataOrigin;
       usesErp: boolean;
@@ -661,18 +692,19 @@ export function createApp() {
         label: 'Student Profile',
         source: session.mode === 'live' && !session.erpToken && session.lmsToken ? 'LMS' : 'ERP',
         usesErp: session.mode === 'mock' || Boolean(session.erpToken),
-        mockLoader: (s) => buildMockProfile(s.registerNumber, s.name),
+        mockLoader: (s) => buildMockProfile(s.registerNumber, s.name, s.erpRole ?? 'student'),
         liveLoader: (s) => fetchLiveProfile(s),
         validator: validateProfile,
         count: () => 1,
       },
       {
         section: 'attendance',
+        cacheKey: attendanceCacheKey,
         label: 'Attendance',
         source: 'ERP',
         usesErp: true,
-        mockLoader: () => buildMockAttendance(),
-        liveLoader: (s) => fetchLiveAttendance(s),
+        mockLoader: () => buildMockAttendance(effectiveEndDate),
+        liveLoader: (s) => fetchLiveAttendance(s, { endDate: effectiveEndDate }),
         validator: validateAttendance,
         count: (d) => (Array.isArray(d) ? d.length : 0),
       },
@@ -743,7 +775,7 @@ export function createApp() {
         try {
           const result = await cache.getOrFetch(
             userHash,
-            spec.section,
+            spec.cacheKey ?? spec.section,
             CACHE_TTL_MS,
             async () => {
               if (spec.usesErp && simulatedErpOutage.has(userHash)) {
@@ -932,19 +964,62 @@ export function createApp() {
     'profile',
     'ERP',
     true,
-    (s) => buildMockProfile(s.registerNumber, s.name),
+    (s) => buildMockProfile(s.registerNumber, s.name, s.erpRole ?? 'student'),
     (s) => fetchLiveProfile(s),
     validateProfile
   );
-  registerSection(
-    '/api/portal/attendance',
-    'attendance',
-    'ERP',
-    true,
-    () => buildMockAttendance(),
-    (s) => fetchLiveAttendance(s),
-    validateAttendance
-  );
+  app.get('/api/portal/attendance', async (req, res) => {
+    const session = resolveActiveSession(req, res);
+    if (!session) {
+      res.status(401).json({ error: 'Session expired. Please sign in again.' });
+      return;
+    }
+    const rawEndDate = typeof req.query.endDate === 'string' ? req.query.endDate.trim() : undefined;
+    if (rawEndDate && !/^\d{4}-\d{2}-\d{2}$/.test(rawEndDate)) {
+      res.status(400).json({ error: 'Invalid endDate format. Expected YYYY-MM-DD.' });
+      return;
+    }
+    const effectiveEndDate = normalizeAttendanceEndDate(rawEndDate);
+    const todayKey = getTodayLocalDateKey();
+    const cacheKey = effectiveEndDate === todayKey ? 'attendance' : `attendance:${effectiveEndDate}`;
+    const userHash = TwoTierCache.hashUserKey(
+      JSON.stringify([session.registerNumber, session.name, session.exp])
+    );
+    const forceRefresh = req.query.refresh === '1';
+
+    try {
+      const result = await cache.getOrFetch(
+        userHash,
+        cacheKey,
+        CACHE_TTL_MS,
+        async () => {
+          if (simulatedErpOutage.has(userHash)) {
+            throw new Error('ERP portal did not respond within 5s');
+          }
+          const raw =
+            session.mode === 'live'
+              ? await fetchLiveAttendance(session, { endDate: effectiveEndDate })
+              : buildMockAttendance(effectiveEndDate);
+          return validateAttendance(raw);
+        },
+        { forceRefresh }
+      );
+
+      const envelope: SectionEnvelope<ReturnType<typeof validateAttendance>> = {
+        data: result.data,
+        stale: result.stale,
+        fetchedAt: result.fetchedAt,
+        source: 'ERP',
+        mode: session.mode,
+        warning: result.warning,
+      };
+      res.json(envelope);
+    } catch (err) {
+      const status = err instanceof LiveUpstreamError ? err.status : 503;
+      const message = err instanceof Error ? err.message : 'Unable to fetch attendance data.';
+      res.status(status).json({ error: message, section: 'attendance', source: 'ERP' });
+    }
+  });
   registerSection(
     '/api/portal/timetable',
     'timetable',

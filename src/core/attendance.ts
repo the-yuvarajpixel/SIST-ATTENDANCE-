@@ -405,6 +405,41 @@ export function analyzeAttendanceInsights(
   };
 }
 
+export function getTodayLocalDateKey(now = new Date()): string {
+  return toLocalDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate()));
+}
+
+/**
+ * Validates a YYYY-MM-DD end-date string and strictly clamps it to <= today.
+ * Returns today's local YYYY-MM-DD key if missing, malformed, or in the future.
+ */
+export function normalizeAttendanceEndDate(rawDate: string | undefined, now = new Date()): string {
+  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (!rawDate || !/^\d{4}-\d{2}-\d{2}$/.test(rawDate.trim())) {
+    return toLocalDateKey(todayMidnight);
+  }
+  const parsed = parseDateAsLocalMidnight(rawDate.trim());
+  if (!parsed) return toLocalDateKey(todayMidnight);
+  // Reject impossible calendar dates like 2026-02-31 where JS Date rolls over
+  if (toLocalDateKey(parsed) !== rawDate.trim()) {
+    return toLocalDateKey(todayMidnight);
+  }
+  if (parsed.getTime() > todayMidnight.getTime()) {
+    return toLocalDateKey(todayMidnight);
+  }
+  return toLocalDateKey(parsed);
+}
+
+export function formatAttendanceDateDisplay(isoDate: string): string {
+  const parsed = parseDateAsLocalMidnight(isoDate);
+  if (!parsed) return isoDate;
+  return parsed.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
 function toLocalDateKey(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');

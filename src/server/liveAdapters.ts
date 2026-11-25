@@ -21,10 +21,12 @@ import {
   type MoodleCourseSummary,
   type MoodleSiteInfo,
 } from '../core/liveParsers';
+import { normalizeAttendanceEndDate } from '../core/attendance';
 import { deduplicateDeadlines } from '../core/schedule';
 import type {
   AttendanceSubject,
   DeadlineItem,
+  ErpUserRole,
   NotificationItem,
   ResultsPayload,
   StudentProfile,
@@ -40,6 +42,9 @@ const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MB cap per upstream JSON respon
 
 const DEFAULT_ERP_PATHS = {
   login: '/erp/api/v1.0/MasterStudent/login_sec',
+  staffLogin: '/erp/api/v1.0/MasterStaff/login_sec',
+  admissionLogin: '/erp/api/v1.0/MasterStudent/login_sec',
+  parentLogin: '/erp/api/v1.0/MasterStudent/login_sec',
   studentLookup: '/erp/api/v1.0/MasterStudent/StudentRegNoAutoSuggest',
   profile: '/erp/api/v1.0/MasterStudent/view',
   attendance: '/erp/api/v1.0/StudentAttendanceHourly/getStudentAcademicHourwise',
@@ -61,6 +66,9 @@ export interface LiveAdapterConfig {
   lmsConfigError: string | null;
   erpPaths: {
     login: string;
+    staffLogin: string;
+    admissionLogin: string;
+    parentLogin: string;
     studentLookup: string;
     profile: string;
     attendance: string;
@@ -87,6 +95,8 @@ export interface LiveAdapterDeps {
   fetchImpl?: typeof fetch;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  role?: ErpUserRole;
+  endDate?: string;
 }
 
 export function getLiveAdapterConfig(env: NodeJS.ProcessEnv = process.env): LiveAdapterConfig {
@@ -137,6 +147,9 @@ export function getLiveAdapterConfig(env: NodeJS.ProcessEnv = process.env): Live
     lmsConfigError,
     erpPaths: {
       login: safePath(env.ERP_LOGIN_PATH, DEFAULT_ERP_PATHS.login),
+      staffLogin: safePath(env.ERP_STAFF_LOGIN_PATH, DEFAULT_ERP_PATHS.staffLogin),
+      admissionLogin: safePath(env.ERP_ADMISSION_LOGIN_PATH, DEFAULT_ERP_PATHS.admissionLogin),
+      parentLogin: safePath(env.ERP_PARENT_LOGIN_PATH, DEFAULT_ERP_PATHS.parentLogin),
       studentLookup: safePath(env.ERP_STUDENT_LOOKUP_PATH, DEFAULT_ERP_PATHS.studentLookup),
       profile: safePath(env.ERP_PROFILE_PATH, DEFAULT_ERP_PATHS.profile),
       attendance: safePath(env.ERP_ATTENDANCE_PATH, DEFAULT_ERP_PATHS.attendance),
@@ -566,7 +579,15 @@ export interface ErpCredentialExchangeResult {
   token: string;
   studentName?: string;
   studentId?: string;
+  role: ErpUserRole;
 }
+
+const ERP_USER_TYPE_LABELS: Record<ErpUserRole, string> = {
+  student: 'Student',
+  staff: 'Staff',
+  'new-admission': 'NewAdmission',
+  parent: 'Parent',
+};
 
 export async function exchangeErpCredentialsForToken(
   username: string,
@@ -585,19 +606,39 @@ export async function exchangeErpCredentialsForToken(
     });
   }
 
+  const role: ErpUserRole = deps.role ?? 'student';
   const fetchImpl = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const endpoint = `${config.erpBaseUrl}${config.erpPaths.login}`;
+  const loginPath =
+    role === 'staff'
+      ? config.erpPaths.staffLogin
+      : role === 'new-admission'
+        ? config.erpPaths.admissionLogin
+        : role === 'parent'
+          ? config.erpPaths.parentLogin
+          : config.erpPaths.login;
+  const endpoint = `${config.erpBaseUrl}${loginPath}`;
+  const trimmedUser = username.trim();
 
   // Credentials are sent strictly in HTTPS POST JSON body and discarded immediately (never stored or logged).
-  const payload = {
-    RegisterNumber: username.trim(),
-    username: username.trim(),
+  const payload: Record<string, unknown> = {
+    RegisterNumber: trimmedUser,
+    username: trimmedUser,
     Password: password,
     password,
+    UserType: ERP_USER_TYPE_LABELS[role],
+    Role: role,
     CapchaKey: generateErpCaptchaKey(48),
     TurnstileToken: '',
   };
+  if (role === 'staff') {
+    payload.StaffNumber = trimmedUser;
+    payload.EmployeeCode = trimmedUser;
+  } else if (role === 'new-admission') {
+    payload.ApplicationNumber = trimmedUser;
+  } else if (role === 'parent') {
+    payload.ParentId = trimmedUser;
+  }
 
   let res: Response;
   try {
@@ -690,7 +731,7 @@ export async function exchangeErpCredentialsForToken(
           : typeof rawSid === 'string' && rawSid.trim()
             ? rawSid.trim()
             : extractErpStudentIdFromToken(rawToken);
-      return { token: rawToken.trim(), studentName, studentId };
+      return { token: rawToken.trim(), studentName, studentId, role };
     }
 
     const upstreamMsg =
@@ -803,15 +844,21 @@ export async function fetchLiveAttendance(
     );
   }
   const config = getLiveAdapterConfig(deps.env);
+  const now = new Date();
+  const effectiveEndDate = normalizeAttendanceEndDate(deps.endDate, now);
+  const [ey, em, ed] = effectiveEndDate.split('-').map(Number);
+  const cutoffDate = new Date(ey, em - 1, ed);
+
   if (!shouldUseSathyabamaPost(config.erpPaths.attendance, config.customErpPaths.attendance)) {
+    const queryJoiner = config.erpPaths.attendance.includes('?') ? '&' : '?';
     const raw = await requestErpJson(
-      config.erpPaths.attendance,
+      `${config.erpPaths.attendance}${queryJoiner}toDate=${encodeURIComponent(effectiveEndDate)}`,
       session.erpToken,
       session.registerNumber,
       { method: 'GET' },
       deps
     );
-    return parseErpAttendance(raw);
+    return parseErpAttendance(raw, cutoffDate);
   }
 
   const studentId = await resolveErpStudentId(
@@ -820,15 +867,18 @@ export async function fetchLiveAttendance(
     session.erpStudentId,
     deps
   );
-  const now = new Date();
-  const todayIsoDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const body: Record<string, unknown> = studentId
     ? {
         StudentId: /^\d+$/.test(studentId) ? Number(studentId) : studentId,
         RegisterNumber: session.registerNumber,
-        ToDate: todayIsoDate,
+        ToDate: effectiveEndDate,
+        EndDate: effectiveEndDate,
       }
-    : { RegisterNumber: session.registerNumber, ToDate: todayIsoDate };
+    : {
+        RegisterNumber: session.registerNumber,
+        ToDate: effectiveEndDate,
+        EndDate: effectiveEndDate,
+      };
   const raw = await requestErpJson(
     config.erpPaths.attendance,
     session.erpToken,
@@ -836,7 +886,7 @@ export async function fetchLiveAttendance(
     { method: 'POST', body },
     deps
   );
-  return parseErpAttendance(raw, now);
+  return parseErpAttendance(raw, cutoffDate);
 }
 
 export async function fetchLiveTimetable(

@@ -1,15 +1,17 @@
 import crypto from 'node:crypto';
 import type { Request, Response } from 'express';
-import type { DataSourceMode, SessionUser } from '../core/types';
+import type { DataSourceMode, ErpUserRole, SessionUser } from '../core/types';
 
 const COOKIE_NAME = 'usp_session';
 const SIGNED_OUT_COOKIE = 'usp_signed_out';
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000; // 8 hours
+const VALID_ERP_ROLES: ReadonlySet<ErpUserRole> = new Set(['student', 'staff', 'new-admission', 'parent']);
 
 export interface StoredSession {
   registerNumber: string;
   name: string;
   mode: DataSourceMode;
+  erpRole?: ErpUserRole;
   erpToken?: string;
   erpStudentId?: string;
   lmsToken?: string;
@@ -59,6 +61,7 @@ export function decryptSession(token: string): StoredSession | null {
       !Number.isFinite(parsed.exp) ||
       typeof parsed.name !== 'string' ||
       !['mock', 'live'].includes(parsed.mode) ||
+      (parsed.erpRole !== undefined && !VALID_ERP_ROLES.has(parsed.erpRole)) ||
       (parsed.erpStudentId !== undefined &&
         (typeof parsed.erpStudentId !== 'string' || parsed.erpStudentId.length > 64)) ||
       (parsed.lmsUserId !== undefined &&
@@ -133,6 +136,7 @@ export function toPublicUser(session: StoredSession): SessionUser {
     registerNumber: session.registerNumber,
     name: session.name,
     mode: session.mode,
+    erpRole: session.erpRole ?? 'student',
     erpTokenPresent: Boolean(session.erpToken),
     lmsTokenPresent: Boolean(session.lmsToken),
     expiresAt: new Date(session.exp).toISOString(),

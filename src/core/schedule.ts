@@ -136,3 +136,76 @@ export function deduplicateDeadlines(items: DeadlineItem[]): {
 
   return { items: sorted, duplicatesMerged };
 }
+
+export type ExamCountdownUrgency = 'today' | 'soon' | 'upcoming';
+
+export interface ExamCountdownEntry {
+  item: DeadlineItem;
+  daysRemaining: number;
+  hoursRemaining: number;
+  countdownLabel: string;
+  urgency: ExamCountdownUrgency;
+}
+
+const MS_PER_HOUR = 60 * 60 * 1000;
+const MS_PER_DAY = 24 * MS_PER_HOUR;
+
+function startOfLocalDayMs(date: Date): number {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+/**
+ * Extracts upcoming exam deadlines originating from ERP (including merged ERP + LMS entries),
+ * excludes completed or already-passed exams, computes calendar days remaining, and sorts earliest-first.
+ */
+export function getUpcomingErpExams(
+  deadlines: DeadlineItem[],
+  options?: { now?: Date; completedIds?: Set<string> }
+): ExamCountdownEntry[] {
+  const now = options?.now ?? new Date();
+  const nowMs = now.getTime();
+  const todayStartMs = startOfLocalDayMs(now);
+  const completedIds = options?.completedIds;
+
+  const entries: ExamCountdownEntry[] = [];
+
+  for (const item of deadlines) {
+    if (item.kind !== 'exam') continue;
+    if (item.origin !== 'ERP' && item.origin !== 'ERP + LMS') continue;
+    if (completedIds?.has(item.id)) continue;
+
+    const dueMs = Date.parse(item.dueAt);
+    if (Number.isNaN(dueMs) || dueMs < nowMs) continue;
+
+    const dueDate = new Date(dueMs);
+    const daysRemaining = Math.max(
+      0,
+      Math.round((startOfLocalDayMs(dueDate) - todayStartMs) / MS_PER_DAY)
+    );
+    const hoursRemaining = Math.max(1, Math.ceil((dueMs - nowMs) / MS_PER_HOUR));
+
+    const urgency: ExamCountdownUrgency =
+      daysRemaining === 0 ? 'today' : daysRemaining <= 3 ? 'soon' : 'upcoming';
+
+    const countdownLabel =
+      daysRemaining === 0
+        ? hoursRemaining === 1
+          ? 'Today · 1h left'
+          : `Today · ${hoursRemaining}h left`
+        : daysRemaining === 1
+          ? '1 day left'
+          : `${daysRemaining} days left`;
+
+    entries.push({
+      item,
+      daysRemaining,
+      hoursRemaining,
+      countdownLabel,
+      urgency,
+    });
+  }
+
+  entries.sort((a, b) => Date.parse(a.item.dueAt) - Date.parse(b.item.dueAt));
+  return entries;
+}
+

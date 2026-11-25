@@ -1,4 +1,5 @@
 export type DataSourceMode = 'mock' | 'live';
+export type ErpUserRole = 'student' | 'staff' | 'new-admission' | 'parent';
 
 export type NavSection =
   | 'overview'
@@ -14,6 +15,7 @@ export type NavSection =
 
 export interface StudentProfile {
   registerNumber: string;
+  erpRole?: ErpUserRole;
   name: string;
   program: string;
   department: string;
@@ -198,6 +200,7 @@ export interface SessionUser {
   registerNumber: string;
   name: string;
   mode: DataSourceMode;
+  erpRole?: ErpUserRole;
   erpTokenPresent: boolean;
   lmsTokenPresent: boolean;
   expiresAt: string;

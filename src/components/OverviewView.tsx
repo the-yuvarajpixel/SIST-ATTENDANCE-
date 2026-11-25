@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ArrowRight, CalendarClock, TrendingUp } from 'lucide-react';
 import {
   analyzeAttendanceInsights,
@@ -6,7 +6,7 @@ import {
   computeOverallAttendance,
 } from '../core/attendance';
 import { computeCgpaSummary } from '../core/gpa';
-import { findNextClass } from '../core/schedule';
+import { findNextClass, getUpcomingErpExams } from '../core/schedule';
 import type {
   AttendanceSubject,
   DeadlineItem,
@@ -17,7 +17,7 @@ import type {
   StudentProfile,
   TimetableSlot,
 } from '../core/types';
-import { formatInr, formatRelativeDue, formatShortDate } from '../lib/format';
+import { formatExamDateTime, formatInr, formatRelativeDue, formatShortDate } from '../lib/format';
 import { SectionError, SectionSkeleton, StaleBanner } from './SectionNotice';
 
 export interface SectionState<T> {
@@ -58,6 +58,16 @@ export function OverviewView({
   onRetrySection,
 }: OverviewViewProps) {
   const [showAllPriorities, setShowAllPriorities] = useState(false);
+  const [showAllExams, setShowAllExams] = useState(false);
+  const [expandedExamId, setExpandedExamId] = useState<string | null>(null);
+  const [now, setNow] = useState<Date>(() => new Date());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNow(new Date());
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const attendanceList = attendance.envelope?.data ?? [];
   const timetableList = timetable.envelope?.data ?? [];
@@ -65,12 +75,27 @@ export function OverviewView({
   const notificationList = notifications.envelope?.data ?? [];
   const resultsData = results.envelope?.data ?? null;
 
-  const nextClass = findNextClass(timetableList, attendanceList, new Date(), attendanceTarget);
+  const nextClass = findNextClass(timetableList, attendanceList, now, attendanceTarget);
   const overallAttendance = computeOverallAttendance(attendanceList, attendanceTarget);
   const attendanceInsights = analyzeAttendanceInsights(attendanceList, timetableList, attendanceTarget);
   const cgpaSummary = resultsData ? computeCgpaSummary(resultsData.semesters) : null;
 
   const openDeadlines = deadlineList.filter((d) => !completedDeadlineIds.has(d.id));
+  const upcomingErpExams = getUpcomingErpExams(deadlineList, {
+    now,
+    completedIds: completedDeadlineIds,
+  });
+  const completedErpExamCount = deadlineList.filter(
+    (d) =>
+      d.kind === 'exam' &&
+      (d.origin === 'ERP' || d.origin === 'ERP + LMS') &&
+      completedDeadlineIds.has(d.id)
+  ).length;
+  const leadExam = upcomingErpExams[0] ?? null;
+  const followingExams = showAllExams
+    ? upcomingErpExams.slice(1)
+    : upcomingErpExams.slice(1, 4);
+
   const unreadNotices = notificationList.filter((n) => n.unread && !readNotificationIds.has(n.id));
   const lowAttendanceSubjects = attendanceList
     .map((s) => ({ subject: s, stats: computeAttendanceStats(s.attended, s.total, attendanceTarget) }))
@@ -756,69 +781,287 @@ export function OverviewView({
           </section>
         </div>
 
-        {/* Right: Recent Notifications */}
-        <section className="xl:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
-          <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-slate-200 dark:border-slate-800">
-            <div>
-              <h3 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
-                Recent Notices
-              </h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                ERP circulars and LMS announcements
-              </p>
+        {/* Right: Exam Countdown + Recent Notifications */}
+        <div className="xl:col-span-5 space-y-6">
+          <section
+            aria-label="Exam countdown"
+            className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900"
+          >
+            <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-slate-200 dark:border-slate-800">
+              <div className="min-w-0">
+                <h3 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
+                  Exam Countdown
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
+                  {deadlines.loading && !deadlines.envelope
+                    ? 'Syncing ERP exam schedule...'
+                    : upcomingErpExams.length > 0
+                      ? `ERP exam schedule · ${upcomingErpExams.length} upcoming`
+                      : 'Upcoming exam dates from ERP'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => onNavigate('deadlines')}
+                className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                Full schedule
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => onNavigate('notifications')}
-              className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              Open feed
-            </button>
-          </div>
 
-          {notifications.loading && !notifications.envelope ? (
-            <div className="p-5">
-              <SectionSkeleton rows={4} />
-            </div>
-          ) : notifications.error && !notifications.envelope ? (
-            <div className="p-5">
-              <SectionError
-                sectionName="Notifications"
-                message={notifications.error}
-                onRetry={() => onRetrySection('notifications')}
-              />
-            </div>
-          ) : (
-            <div className="divide-y divide-slate-200 dark:divide-slate-800">
-              {notificationList.slice(0, 5).map((notice) => {
-                const isUnread = notice.unread && !readNotificationIds.has(notice.id);
-                return (
-                  <div key={notice.id} className="px-5 py-4 space-y-1">
-                    <div className="flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
-                      <span>
-                        {notice.origin} · {notice.category}
-                        {isUnread ? (
-                          <span className="ml-2 font-semibold text-blue-700 dark:text-blue-400">
-                            Unread
+            {deadlines.loading && !deadlines.envelope ? (
+              <div className="p-5">
+                <SectionSkeleton rows={3} />
+              </div>
+            ) : deadlines.error && !deadlines.envelope ? (
+              <div className="p-5">
+                <SectionError
+                  sectionName="Exam Countdown"
+                  message={deadlines.error}
+                  onRetry={() => onRetrySection('deadlines')}
+                />
+              </div>
+            ) : !leadExam ? (
+              <div className="p-5 space-y-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                    {completedErpExamCount > 0
+                      ? `All ${completedErpExamCount} scheduled ERP ${completedErpExamCount === 1 ? 'exam' : 'exams'} completed`
+                      : 'No upcoming ERP exams scheduled'}
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    {completedErpExamCount > 0
+                      ? 'Marked exams are hidden from the countdown. Review or unmark them in Deadlines.'
+                      : 'Upcoming exam dates published on Sathyabama ERP will count down here automatically.'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onNavigate(completedErpExamCount > 0 ? 'deadlines' : 'sync')}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 px-3.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  {completedErpExamCount > 0 ? 'Review in Deadlines' : 'Sync ERP Portal'}
+                </button>
+              </div>
+            ) : (
+              <div>
+                {/* Spotlight: Next Upcoming ERP Exam */}
+                <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/30 flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-x-1.5">
+                      <span className="font-medium text-blue-700 dark:text-blue-400">Next exam</span>
+                      {leadExam.item.courseCode ? (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-mono text-slate-700 dark:text-slate-300">
+                            {leadExam.item.courseCode}
                           </span>
-                        ) : null}
-                      </span>
-                      <span className="font-mono tabular-nums shrink-0">
-                        {formatShortDate(notice.publishedAt)}
-                      </span>
-                    </div>
-                    <p className="text-sm font-medium text-slate-900 dark:text-slate-100 leading-snug">
-                      {notice.title}
+                        </>
+                      ) : null}
+                      <span aria-hidden="true">·</span>
+                      <span>{leadExam.item.origin}</span>
                     </p>
-                    <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-                      {notice.summary}
+                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-50 leading-snug">
+                      {leadExam.item.title}
                     </p>
+                    <p className="font-mono text-xs tabular-nums text-slate-600 dark:text-slate-300">
+                      {formatExamDateTime(leadExam.item.dueAt)}
+                    </p>
+                    {leadExam.item.notes ? (
+                      <p className="pt-0.5 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                        {leadExam.item.notes}
+                      </p>
+                    ) : null}
                   </div>
-                );
-              })}
+
+                  <div className="text-right shrink-0 pl-2">
+                    {leadExam.daysRemaining === 0 ? (
+                      <>
+                        <p className="font-mono text-2xl font-bold tracking-tight text-red-700 dark:text-red-400">
+                          Today
+                        </p>
+                        <p className="mt-1 font-mono text-xs font-medium tabular-nums text-red-700 dark:text-red-400">
+                          {leadExam.hoursRemaining}h left
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p
+                          className={`font-mono text-3xl font-bold tabular-nums leading-none tracking-tight ${
+                            leadExam.urgency === 'soon'
+                              ? 'text-amber-700 dark:text-amber-400'
+                              : 'text-slate-900 dark:text-slate-50'
+                          }`}
+                        >
+                          {leadExam.daysRemaining}
+                        </p>
+                        <p
+                          className={`mt-1 text-xs font-medium whitespace-nowrap ${
+                            leadExam.urgency === 'soon'
+                              ? 'text-amber-700 dark:text-amber-400'
+                              : 'text-slate-500 dark:text-slate-400'
+                          }`}
+                        >
+                          {leadExam.daysRemaining === 1 ? 'day left' : 'days left'}
+                        </p>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Subsequent ERP Exams */}
+                {followingExams.length > 0 ? (
+                  <div className="divide-y divide-slate-200 dark:divide-slate-800">
+                    {followingExams.map((entry) => {
+                      const isExpanded = expandedExamId === entry.item.id;
+                      const countdownTone =
+                        entry.urgency === 'today'
+                          ? 'text-red-700 dark:text-red-400'
+                          : entry.urgency === 'soon'
+                            ? 'text-amber-700 dark:text-amber-400'
+                            : 'text-slate-900 dark:text-slate-100';
+                      const canExpand = Boolean(entry.item.notes);
+
+                      return (
+                        <button
+                          key={entry.item.id}
+                          type="button"
+                          onClick={() => {
+                            if (!canExpand) return;
+                            setExpandedExamId((prev) =>
+                              prev === entry.item.id ? null : entry.item.id
+                            );
+                          }}
+                          aria-expanded={canExpand ? isExpanded : undefined}
+                          className={`w-full text-left px-5 py-3.5 transition-colors ${
+                            canExpand
+                              ? 'hover:bg-slate-50/70 dark:hover:bg-slate-800/30 cursor-pointer'
+                              : 'cursor-default'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-medium text-slate-900 dark:text-slate-100 leading-snug">
+                                {entry.item.title}
+                              </p>
+                              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+                                {entry.item.courseCode ? `${entry.item.courseCode} · ` : ''}
+                                {formatExamDateTime(entry.item.dueAt)}
+                              </p>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <p className={`font-mono text-sm font-semibold tabular-nums whitespace-nowrap ${countdownTone}`}>
+                                {entry.daysRemaining === 0
+                                  ? 'Today'
+                                  : `${entry.daysRemaining}d`}
+                              </p>
+                              <p className="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                                {entry.countdownLabel}
+                              </p>
+                            </div>
+                          </div>
+                          {isExpanded && entry.item.notes ? (
+                            <p className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800/80 text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                              {entry.item.notes}
+                            </p>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+
+                <div className="px-5 py-3 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+                  {upcomingErpExams.length > 4 ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllExams((prev) => !prev)}
+                      className="font-medium text-blue-700 dark:text-blue-400 hover:underline whitespace-nowrap cursor-pointer"
+                    >
+                      {showAllExams
+                        ? 'Show fewer'
+                        : `Show all ${upcomingErpExams.length} exams`}
+                    </button>
+                  ) : (
+                    <span className="text-slate-500 dark:text-slate-400">
+                      Synced from ERP exam deadlines
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('marks')}
+                    className="font-medium text-blue-700 dark:text-blue-400 hover:underline whitespace-nowrap cursor-pointer"
+                  >
+                    Review CAE Marks
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+            <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-slate-200 dark:border-slate-800">
+              <div>
+                <h3 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
+                  Recent Notices
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  ERP circulars and LMS announcements
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => onNavigate('notifications')}
+                className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                Open feed
+              </button>
             </div>
-          )}
-        </section>
+
+            {notifications.loading && !notifications.envelope ? (
+              <div className="p-5">
+                <SectionSkeleton rows={4} />
+              </div>
+            ) : notifications.error && !notifications.envelope ? (
+              <div className="p-5">
+                <SectionError
+                  sectionName="Notifications"
+                  message={notifications.error}
+                  onRetry={() => onRetrySection('notifications')}
+                />
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-200 dark:divide-slate-800">
+                {notificationList.slice(0, 5).map((notice) => {
+                  const isUnread = notice.unread && !readNotificationIds.has(notice.id);
+                  return (
+                    <div key={notice.id} className="px-5 py-4 space-y-1">
+                      <div className="flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+                        <span>
+                          {notice.origin} · {notice.category}
+                          {isUnread ? (
+                            <span className="ml-2 font-semibold text-blue-700 dark:text-blue-400">
+                              Unread
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="font-mono tabular-nums shrink-0">
+                          {formatShortDate(notice.publishedAt)}
+                        </span>
+                      </div>
+                      <p className="text-sm font-medium text-slate-900 dark:text-slate-100 leading-snug">
+                        {notice.title}
+                      </p>
+                      <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                        {notice.summary}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        </div>
       </div>
     </div>
   );

@@ -19,6 +19,22 @@ export function formatDateTime(iso: string): string {
   });
 }
 
+export function formatExamDateTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const datePart = date.toLocaleDateString('en-IN', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  });
+  const timePart = date.toLocaleTimeString('en-IN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+  return `${datePart} · ${timePart}`;
+}
+
 export function formatRelativeDue(iso: string, now = new Date()): {
   label: string;
   urgency: 'overdue' | 'soon' | 'upcoming';

@@ -1,7 +1,9 @@
+import { getTodayLocalDateKey, normalizeAttendanceEndDate } from '../core/attendance';
 import { deduplicateDeadlines } from '../core/schedule';
 import type {
   AttendanceSubject,
   DeadlineItem,
+  ErpUserRole,
   NotificationItem,
   ResultsPayload,
   StudentProfile,
@@ -24,17 +26,53 @@ function formatIsoDate(daysFromNow: number): string {
   return `${year}-${month}-${day}`;
 }
 
-export function buildMockProfile(registerNumber: string, displayName?: string): StudentProfile {
+function countWeekdaysBetween(startIso: string, endIso: string): number {
+  const [sy, sm, sd] = startIso.split('-').map(Number);
+  const [ey, em, ed] = endIso.split('-').map(Number);
+  const start = new Date(sy, sm - 1, sd);
+  const end = new Date(ey, em - 1, ed);
+  if (end.getTime() <= start.getTime()) return 0;
+  let count = 0;
+  const cursor = new Date(start.getTime());
+  while (cursor.getTime() < end.getTime()) {
+    cursor.setDate(cursor.getDate() + 1);
+    const day = cursor.getDay();
+    if (day !== 0 && day !== 6) count += 1;
+  }
+  return count;
+}
+
+export function buildMockProfile(
+  registerNumber: string,
+  displayName?: string,
+  erpRole: ErpUserRole = 'student'
+): StudentProfile {
   const reg = registerNumber.trim() || '42110482';
-  const name = displayName?.trim() || (reg === '42110482' ? 'Arjun Subramanian' : `Student ${reg}`);
+  const defaultName =
+    reg === '42110482'
+      ? 'Arjun Subramanian'
+      : erpRole === 'staff'
+        ? `Staff ${reg}`
+        : erpRole === 'parent'
+          ? `Parent (${reg})`
+          : erpRole === 'new-admission'
+            ? `Applicant ${reg}`
+            : `Student ${reg}`;
+  const name = displayName?.trim() || defaultName;
   return {
     registerNumber: reg,
+    erpRole,
     name,
-    program: 'B.E. Computer Science and Engineering',
+    program:
+      erpRole === 'staff'
+        ? 'Faculty · Computer Science and Engineering'
+        : erpRole === 'new-admission'
+          ? 'New Admission · B.E. Computer Science and Engineering'
+          : 'B.E. Computer Science and Engineering',
     department: 'School of Computing',
-    semester: 6,
-    batch: '2023 – 2027',
-    section: 'CSE – B2',
+    semester: erpRole === 'new-admission' ? 1 : 6,
+    batch: erpRole === 'new-admission' ? '2026 – 2030' : '2023 – 2027',
+    section: erpRole === 'staff' ? 'Faculty Advisor · CSE-B2' : 'CSE – B2',
     email: `${reg.toLowerCase()}@sathyabama.ac.in`,
     advisor: 'Dr. R. Meenakshi',
     erpConnected: true,
@@ -42,65 +80,119 @@ export function buildMockProfile(registerNumber: string, displayName?: string): 
   };
 }
 
-export function buildMockAttendance(): AttendanceSubject[] {
-  const today = formatIsoDate(0);
+export function buildMockAttendance(endDateIso?: string): AttendanceSubject[] {
+  const today = getTodayLocalDateKey();
   const yesterday = formatIsoDate(-1);
-  return [
+  const effectiveEnd = normalizeAttendanceEndDate(endDateIso);
+
+  const base: {
+    subject: AttendanceSubject;
+    sessionsPerWeek: number;
+    recentAttendanceBias: number;
+  }[] = [
     {
-      courseCode: 'SCSA1601',
-      courseName: 'Computer Networks',
-      faculty: 'Dr. S. Priya Dharshini',
-      credits: 4,
-      attended: 35,
-      total: 40,
-      lastUpdated: today,
+      subject: {
+        courseCode: 'SCSA1601',
+        courseName: 'Computer Networks',
+        faculty: 'Dr. S. Priya Dharshini',
+        credits: 4,
+        attended: 35,
+        total: 40,
+        lastUpdated: today,
+      },
+      sessionsPerWeek: 4,
+      recentAttendanceBias: 0.9,
     },
     {
-      courseCode: 'SCSA1602',
-      courseName: 'Compiler Design',
-      faculty: 'Prof. K. Karthikeyan',
-      credits: 4,
-      attended: 25,
-      total: 36,
-      lastUpdated: today,
+      subject: {
+        courseCode: 'SCSA1602',
+        courseName: 'Compiler Design',
+        faculty: 'Prof. K. Karthikeyan',
+        credits: 4,
+        attended: 25,
+        total: 36,
+        lastUpdated: today,
+      },
+      sessionsPerWeek: 4,
+      recentAttendanceBias: 0.65,
     },
     {
-      courseCode: 'SCSA1603',
-      courseName: 'Machine Learning',
-      faculty: 'Dr. M. Vigneshwaran',
-      credits: 4,
-      attended: 31,
-      total: 34,
-      lastUpdated: today,
+      subject: {
+        courseCode: 'SCSA1603',
+        courseName: 'Machine Learning',
+        faculty: 'Dr. M. Vigneshwaran',
+        credits: 4,
+        attended: 31,
+        total: 34,
+        lastUpdated: today,
+      },
+      sessionsPerWeek: 4,
+      recentAttendanceBias: 0.94,
     },
     {
-      courseCode: 'SCSA1604',
-      courseName: 'Cloud Computing Architecture',
-      faculty: 'Prof. N. Anitha',
-      credits: 3,
-      attended: 24,
-      total: 31,
-      lastUpdated: yesterday,
+      subject: {
+        courseCode: 'SCSA1604',
+        courseName: 'Cloud Computing Architecture',
+        faculty: 'Prof. N. Anitha',
+        credits: 3,
+        attended: 24,
+        total: 31,
+        lastUpdated: yesterday,
+      },
+      sessionsPerWeek: 3,
+      recentAttendanceBias: 0.78,
     },
     {
-      courseCode: 'SCSA2601',
-      courseName: 'Networks & Security Lab',
-      faculty: 'Dr. S. Priya Dharshini',
-      credits: 2,
-      attended: 17,
-      total: 19,
-      lastUpdated: yesterday,
+      subject: {
+        courseCode: 'SCSA2601',
+        courseName: 'Networks & Security Lab',
+        faculty: 'Dr. S. Priya Dharshini',
+        credits: 2,
+        attended: 17,
+        total: 19,
+        lastUpdated: yesterday,
+      },
+      sessionsPerWeek: 2,
+      recentAttendanceBias: 0.9,
     },
     {
-      courseCode: 'SCSA1605',
-      courseName: 'Software Engineering & Agile',
-      faculty: 'Prof. V. Deepika',
-      credits: 3,
-      attended: 21,
-      total: 29,
-      lastUpdated: today,
+      subject: {
+        courseCode: 'SCSA1605',
+        courseName: 'Software Engineering & Agile',
+        faculty: 'Prof. V. Deepika',
+        credits: 3,
+        attended: 21,
+        total: 29,
+        lastUpdated: today,
+      },
+      sessionsPerWeek: 3,
+      recentAttendanceBias: 0.72,
     },
   ];
+
+  if (effectiveEnd === today) {
+    return base.map((item) => item.subject);
+  }
+
+  const weekdaysBack = countWeekdaysBetween(effectiveEnd, today);
+  return base.map(({ subject, sessionsPerWeek, recentAttendanceBias }) => {
+    const removedSessions = Math.min(
+      Math.max(0, subject.total - 4),
+      Math.round((weekdaysBack * sessionsPerWeek) / 5)
+    );
+    const nextTotal = Math.max(1, subject.total - removedSessions);
+    const removedAttended = Math.round(removedSessions * recentAttendanceBias);
+    const nextAttended = Math.max(0, Math.min(nextTotal, subject.attended - removedAttended));
+    const cappedLastUpdated =
+      subject.lastUpdated > effectiveEnd ? effectiveEnd : subject.lastUpdated;
+
+    return {
+      ...subject,
+      attended: nextAttended,
+      total: nextTotal,
+      lastUpdated: cappedLastUpdated,
+    };
+  });
 }
 
 export function buildMockTimetable(): TimetableSlot[] {
@@ -427,6 +519,16 @@ export function buildMockDeadlines(): { items: DeadlineItem[]; duplicatesMerged:
       kind: 'assignment',
       origin: 'LMS',
       notes: 'Team submission (max 2 students) via Moodle Assignment dropbox.',
+    },
+    {
+      id: 'erp-dl-8',
+      title: 'CAE II Examination — Machine Learning',
+      courseCode: 'SCSA1603',
+      courseName: 'Machine Learning',
+      dueAt: shiftDays(12, 9, 0),
+      kind: 'exam',
+      origin: 'ERP',
+      notes: 'Hall Block-C, Room 301 · Units III & IV (Ensemble Methods & Neural Networks).',
     },
     {
       id: 'erp-dl-7',

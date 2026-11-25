@@ -4,6 +4,7 @@ import type {
   CaeTermTrendPoint,
   CourseGrade,
   DeadlineItem,
+  ErpUserRole,
   GradeLetter,
   NotificationItem,
   PlannedCourse,
@@ -27,6 +28,7 @@ export class SchemaValidationError extends Error {
 const VALID_DAYS = new Set<Weekday>(['Mon', 'Tue', 'Wed', 'Thu', 'Fri']);
 const VALID_GRADES = new Set<GradeLetter>(['O', 'A+', 'A', 'B+', 'B', 'C', 'RA']);
 const VALID_CAE_STANDINGS = new Set<CaeStanding>(['strong', 'on-track', 'needs-improvement', 'pending']);
+const VALID_ERP_ROLES = new Set<ErpUserRole>(['student', 'staff', 'new-admission', 'parent']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -53,8 +55,15 @@ export function validateProfile(input: unknown): StudentProfile {
   if (!isRecord(input)) {
     throw new SchemaValidationError('profile', ['payload must be an object']);
   }
+  const rawRole = input.erpRole;
+  const erpRole =
+    typeof rawRole === 'string' && VALID_ERP_ROLES.has(rawRole as ErpUserRole)
+      ? (rawRole as ErpUserRole)
+      : undefined;
+
   const profile: StudentProfile = {
     registerNumber: assertNonEmptyString(input.registerNumber, 'registerNumber', issues),
+    erpRole,
     name: assertNonEmptyString(input.name, 'name', issues),
     program: assertNonEmptyString(input.program, 'program', issues),
     department: assertNonEmptyString(input.department, 'department', issues),

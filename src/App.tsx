@@ -7,14 +7,18 @@ import { LiveLoginGuideView } from './components/LiveLoginGuideView';
 import { MarksView } from './components/MarksView';
 import { NotificationsView } from './components/NotificationsView';
 import { OverviewView, type SectionState } from './components/OverviewView';
-import { PortalSyncView } from './components/PortalSyncView';
+import { PortalSyncView, type AutoSyncIntervalMinutes } from './components/PortalSyncView';
 import { ResultsView } from './components/ResultsView';
 import { SetupHealthView } from './components/SetupHealthView';
 import { Sidebar } from './components/Sidebar';
 import { SignInView } from './components/SignInView';
 import { TimetableView } from './components/TimetableView';
 import { TopBar } from './components/TopBar';
-import { computeOverallAttendance } from './core/attendance';
+import {
+  computeOverallAttendance,
+  getTodayLocalDateKey,
+  normalizeAttendanceEndDate,
+} from './core/attendance';
 import type {
   AttendanceSubject,
   DeadlineItem,
@@ -80,6 +84,18 @@ function getInitialTarget(): number {
   return 75;
 }
 
+function getInitialAutoSyncMinutes(): AutoSyncIntervalMinutes {
+  try {
+    const raw = window.localStorage.getItem('usp_auto_sync_minutes');
+    if (raw === '0' || raw === '1' || raw === '5' || raw === '15') {
+      return Number(raw) as AutoSyncIntervalMinutes;
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return 5;
+}
+
 function getInitialSection(): NavSection {
   if (typeof window !== 'undefined') {
     if (window.location.pathname === '/setup') return 'setup';
@@ -108,6 +124,9 @@ export default function App() {
   const [authNotice, setAuthNotice] = useState<string | null>(null);
 
   const [attendanceTarget, setAttendanceTarget] = useState<number>(getInitialTarget);
+  const [attendanceEndDate, setAttendanceEndDate] = useState<string>(() => getTodayLocalDateKey());
+  const [autoSyncMinutes, setAutoSyncMinutes] = useState<AutoSyncIntervalMinutes>(getInitialAutoSyncMinutes);
+  const [nextAutoSyncAt, setNextAutoSyncAt] = useState<number | null>(null);
   const [completedDeadlineIds, setCompletedDeadlineIds] = useState<Set<string>>(() =>
     readStoredStringSet('usp_completed_deadlines')
   );
@@ -139,10 +158,22 @@ export default function App() {
     }
   }, [attendanceTarget]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('usp_auto_sync_minutes', String(autoSyncMinutes));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [autoSyncMinutes]);
+
   const requestVersions = useRef<Partial<Record<SectionKey, number>>>({});
   const skipNextAutoLoad = useRef(false);
+  const attendanceEndDateRef = useRef(attendanceEndDate);
+  attendanceEndDateRef.current = attendanceEndDate;
+  const syncInFlightRef = useRef(false);
+  const lastSyncTimestampRef = useRef<number>(0);
 
-  const loadSection = useCallback(async (section: SectionKey, refresh = false) => {
+  const loadSection = useCallback(async (section: SectionKey, refresh = false, endDateOverride?: string) => {
     const version = (requestVersions.current[section] ?? 0) + 1;
     requestVersions.current[section] = version;
     const isCurrent = () => requestVersions.current[section] === version;
@@ -165,8 +196,10 @@ export default function App() {
     switch (section) {
       case 'profile':
         return run(api.getProfile, setProfile);
-      case 'attendance':
-        return run(api.getAttendance, setAttendance);
+      case 'attendance': {
+        const effectiveDate = endDateOverride ?? attendanceEndDateRef.current;
+        return run((r) => api.getAttendance(r, effectiveDate), setAttendance);
+      }
       case 'timetable':
         return run(api.getTimetable, setTimetable);
       case 'results':
@@ -315,16 +348,67 @@ export default function App() {
   );
 
   const handleSyncPortals = useCallback(async () => {
+    if (syncInFlightRef.current) return;
+    syncInFlightRef.current = true;
     setSyncingPortals(true);
     try {
-      const report = await api.syncPortals();
+      const report = await api.syncPortals(attendanceEndDateRef.current);
+      lastSyncTimestampRef.current = Date.now();
       setLastSyncReport(report);
+      if (autoSyncMinutes > 0) {
+        setNextAutoSyncAt(Date.now() + autoSyncMinutes * 60_000);
+      }
       // Reload all sections from the freshly populated cache
       loadAllSections(false);
+    } catch {
+      // Section-level errors surface independently when sections refresh
     } finally {
+      syncInFlightRef.current = false;
       setSyncingPortals(false);
     }
-  }, [loadAllSections]);
+  }, [autoSyncMinutes, loadAllSections]);
+
+  const handleChangeAttendanceEndDate = useCallback(
+    (nextRaw: string) => {
+      const normalized = normalizeAttendanceEndDate(nextRaw);
+      attendanceEndDateRef.current = normalized;
+      setAttendanceEndDate(normalized);
+      void loadSection('attendance', true, normalized);
+    },
+    [loadSection]
+  );
+
+  // Automatic background sync across College ERP, Moodle LMS, and all 6 sections
+  useEffect(() => {
+    if (!user || autoSyncMinutes === 0) {
+      setNextAutoSyncAt(null);
+      return;
+    }
+
+    const intervalMs = autoSyncMinutes * 60_000;
+    setNextAutoSyncAt(Date.now() + intervalMs);
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void handleSyncPortals();
+      }
+    }, intervalMs);
+
+    const handleResumeSync = () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastSyncTimestampRef.current >= 60_000) {
+        void handleSyncPortals();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleResumeSync);
+    window.addEventListener('online', handleResumeSync);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleResumeSync);
+      window.removeEventListener('online', handleResumeSync);
+    };
+  }, [user, autoSyncMinutes, handleSyncPortals]);
 
   const handlePortalsConnected = useCallback(
     async (nextUser: SessionUser) => {
@@ -345,14 +429,18 @@ export default function App() {
       }
       setSyncingPortals(true);
       try {
-        const report = await api.syncPortals();
+        const report = await api.syncPortals(attendanceEndDateRef.current);
+        lastSyncTimestampRef.current = Date.now();
         setLastSyncReport(report);
+        if (autoSyncMinutes > 0) {
+          setNextAutoSyncAt(Date.now() + autoSyncMinutes * 60_000);
+        }
         loadAllSections(false);
       } finally {
         setSyncingPortals(false);
       }
     },
-    [loadAllSections, user]
+    [autoSyncMinutes, loadAllSections, user]
   );
 
   const anyLoading =
@@ -451,7 +539,7 @@ export default function App() {
           onToggleTheme={handleToggleTheme}
           onOpenCommandPalette={() => setPaletteOpen(true)}
           onOpenSync={() => setActiveSection('sync')}
-          onRefreshAll={() => loadAllSections(true)}
+          onRefreshAll={() => void handleSyncPortals()}
           onOpenMobileMenu={() => setMobileMenuOpen(true)}
         />
 
@@ -503,6 +591,8 @@ export default function App() {
               <AttendanceView
                 section={attendance}
                 targetPercent={attendanceTarget}
+                endDate={attendanceEndDate}
+                onChangeEndDate={handleChangeAttendanceEndDate}
                 onChangeTarget={setAttendanceTarget}
                 onRetry={() => void loadSection('attendance', true)}
               />
@@ -566,6 +656,9 @@ export default function App() {
                 notifications={notifications}
                 syncing={syncingPortals}
                 lastReport={lastSyncReport}
+                autoSyncMinutes={autoSyncMinutes}
+                nextAutoSyncAt={nextAutoSyncAt}
+                onChangeAutoSyncMinutes={setAutoSyncMinutes}
                 onRunSync={handleSyncPortals}
                 onPortalsConnected={handlePortalsConnected}
                 onRetrySection={(sec) => void loadSection(sec, true)}

@@ -1,9 +1,12 @@
-import { useMemo, useState } from 'react';
-import { Minus, Plus, RotateCcw } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Calendar, Minus, Plus, RefreshCw, RotateCcw } from 'lucide-react';
 import {
   clampAttendanceDateToToday,
   computeOverallAttendance,
+  formatAttendanceDateDisplay,
   getLatestAttendanceDate,
+  getTodayLocalDateKey,
+  normalizeAttendanceEndDate,
   simulateAttendance,
 } from '../core/attendance';
 import type { AttendanceSubject } from '../core/types';
@@ -13,6 +16,8 @@ import { SectionError, SectionSkeleton, StaleBanner } from './SectionNotice';
 interface AttendanceViewProps {
   section: SectionState<AttendanceSubject[]>;
   targetPercent: number;
+  endDate: string;
+  onChangeEndDate: (nextDate: string) => void;
   onChangeTarget: (target: number) => void;
   onRetry: () => void;
 }
@@ -22,14 +27,23 @@ type StatusFilter = 'all' | 'attention' | 'safe';
 export function AttendanceView({
   section,
   targetPercent,
+  endDate,
+  onChangeEndDate,
   onChangeTarget,
   onRetry,
 }: AttendanceViewProps) {
+  const todayKey = useMemo(() => getTodayLocalDateKey(), []);
   const [filter, setFilter] = useState<StatusFilter>('all');
+  const [draftEndDate, setDraftEndDate] = useState<string>(endDate);
   const [deltas, setDeltas] = useState<Record<string, { present: number; absent: number }>>({});
 
-  const subjects = section.envelope?.data ?? [];
+  useEffect(() => {
+    setDraftEndDate(endDate);
+  }, [endDate]);
 
+  const subjects = section.envelope?.data ?? [];
+  const isCustomPastDate = endDate !== todayKey;
+  const activeCutoffDisplay = useMemo(() => formatAttendanceDateDisplay(endDate), [endDate]);
   const latestDateInfo = useMemo(() => getLatestAttendanceDate(subjects), [subjects]);
 
   const rows = useMemo(() => {
@@ -71,6 +85,13 @@ export function AttendanceView({
     });
   }
 
+  function applyEndDate(nextRaw: string) {
+    const normalized = normalizeAttendanceEndDate(nextRaw);
+    setDraftEndDate(normalized);
+    setDeltas({});
+    onChangeEndDate(normalized);
+  }
+
   return (
     <div className="space-y-6">
       <StaleBanner
@@ -81,7 +102,7 @@ export function AttendanceView({
       />
 
       {/* Header Controls */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 sm:p-6">
+      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 sm:p-6 space-y-5">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
           <div>
             <h2 className="font-display text-xl font-bold text-slate-900 dark:text-slate-50">
@@ -95,23 +116,23 @@ export function AttendanceView({
               ({overall.totalAttended}/{overall.totalHeld} classes) · {overall.shortageCount} below{' '}
               {targetPercent}% · {overall.safeCount} safe
             </p>
-            {latestDateInfo.formattedDate ? (
-              <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
-                <span className="font-medium text-slate-700 dark:text-slate-300">
-                  Updated till {latestDateInfo.formattedDate}
-                </span>
-                <span aria-hidden="true"> · </span>
-                <span>Recorded classes up to latest date only</span>
-                {hasAnyDelta ? (
-                  <>
-                    <span aria-hidden="true"> · </span>
-                    <span className="text-blue-700 dark:text-blue-400 font-medium">
-                      What-if simulation active
-                    </span>
-                  </>
-                ) : null}
-              </p>
-            ) : null}
+            <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+              <span className="font-medium text-slate-700 dark:text-slate-300">
+                {isCustomPastDate
+                  ? `End attendance date: ${activeCutoffDisplay}`
+                  : `Updated till ${latestDateInfo.formattedDate ?? activeCutoffDisplay}`}
+              </span>
+              <span aria-hidden="true"> · </span>
+              <span>Recorded classes up to selected end date only</span>
+              {hasAnyDelta ? (
+                <>
+                  <span aria-hidden="true"> · </span>
+                  <span className="text-blue-700 dark:text-blue-400 font-medium">
+                    What-if simulation active
+                  </span>
+                </>
+              ) : null}
+            </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
@@ -176,6 +197,55 @@ export function AttendanceView({
               </button>
             ) : null}
           </div>
+        </div>
+
+        {/* End Attendance Date Cutoff Bar */}
+        <div className="pt-4 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <label
+              htmlFor="attendanceEndDate"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 whitespace-nowrap"
+            >
+              <Calendar className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" aria-hidden="true" />
+              End Attendance Date
+            </label>
+            <input
+              id="attendanceEndDate"
+              type="date"
+              max={todayKey}
+              value={draftEndDate}
+              onChange={(e) => {
+                const next = e.target.value;
+                setDraftEndDate(next);
+                if (/^\d{4}-\d{2}-\d{2}$/.test(next)) {
+                  applyEndDate(next);
+                }
+              }}
+              className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs font-mono tabular-nums text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+            />
+            <button
+              type="button"
+              onClick={() => applyEndDate(draftEndDate)}
+              disabled={section.loading}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3 py-1.5 text-xs font-medium text-white transition-colors whitespace-nowrap cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${section.loading ? 'animate-spin' : ''}`} aria-hidden="true" />
+              Update by Date
+            </button>
+            {isCustomPastDate ? (
+              <button
+                type="button"
+                onClick={() => applyEndDate(todayKey)}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
+              >
+                Reset to Today
+              </button>
+            ) : null}
+          </div>
+
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Future dates are locked to today ({formatAttendanceDateDisplay(todayKey)}).
+          </p>
         </div>
       </section>
 
@@ -298,7 +368,7 @@ export function AttendanceView({
           <div className="border-t border-slate-200 dark:border-slate-800 px-5 py-3 text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center justify-between gap-2">
             <span>
               Actual attendance counts include only classes conducted up to{' '}
-              {latestDateInfo.formattedDate ?? 'today'}.
+              {isCustomPastDate ? activeCutoffDisplay : (latestDateInfo.formattedDate ?? activeCutoffDisplay)}.
             </span>
             <span>What-if controls simulate upcoming classes locally without changing recorded counts.</span>
           </div>
@@ -307,4 +377,3 @@ export function AttendanceView({
     </div>
   );
 }
-

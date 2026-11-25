@@ -466,3 +466,75 @@ test('getLiveAdapterConfig defaults to Sathyabama ERP & LMS, flags invalid URLs,
   assert.equal(probe.reachable, true);
   assert.equal(probe.statusCode, 200);
 });
+
+test('exchangeErpCredentialsForToken routes staff role to staff login endpoint and includes role-specific fields', async () => {
+  let capturedUrl = '';
+  let capturedBody: Record<string, unknown> = {};
+
+  const mockFetch: typeof fetch = async (input, init) => {
+    capturedUrl = String(input);
+    capturedBody = JSON.parse(String(init?.body ?? '{}'));
+    return jsonResponse({
+      status: 1,
+      responseData: {
+        login: {
+          accessToken: 'eyJhbGciOiJIUzI1NiJ9.staff_token_999',
+          name: 'Dr. R. Meenakshi',
+        },
+      },
+    });
+  };
+
+  const res = await exchangeErpCredentialsForToken('STF1042', 'staff-pass', {
+    role: 'staff',
+    fetchImpl: mockFetch,
+    env: { ERP_BASE_URL: 'https://erp.sathyabama.ac.in' },
+  });
+
+  assert.equal(res.role, 'staff');
+  assert.equal(res.token, 'eyJhbGciOiJIUzI1NiJ9.staff_token_999');
+  assert.equal(capturedUrl, 'https://erp.sathyabama.ac.in/erp/api/v1.0/MasterStaff/login_sec');
+  assert.equal(capturedBody.StaffNumber, 'STF1042');
+  assert.equal(capturedBody.EmployeeCode, 'STF1042');
+  assert.equal(capturedBody.UserType, 'Staff');
+});
+
+test('fetchLiveAttendance forwards custom endDate as ToDate and EndDate to College ERP', async () => {
+  let sentBody: Record<string, unknown> = {};
+  const session: StoredSession = {
+    registerNumber: '42110482',
+    name: 'Kavya Nair',
+    mode: 'live',
+    erpRole: 'student',
+    erpToken: 'eyJhbGciOiJIUzI1NiJ9.payload.sig',
+    erpStudentId: '8821',
+    exp: Date.now() + 60_000,
+  };
+
+  const mockFetch: typeof fetch = async (_input, init) => {
+    sentBody = JSON.parse(String(init?.body ?? '{}'));
+    return jsonResponse({
+      status: 1,
+      responseData: [
+        {
+          SubjectCode: 'SCSA1601',
+          SubjectName: 'Computer Networks',
+          TotalHours: 32,
+          TotalPresent: 28,
+          UpdatedDate: '2026-11-10',
+        },
+      ],
+    });
+  };
+
+  const subjects = await fetchLiveAttendance(session, {
+    endDate: '2026-11-10',
+    fetchImpl: mockFetch,
+    env: { ERP_BASE_URL: 'https://erp.sathyabama.ac.in' },
+  });
+
+  assert.equal(sentBody.ToDate, '2026-11-10');
+  assert.equal(sentBody.EndDate, '2026-11-10');
+  assert.equal(subjects.length, 1);
+  assert.ok(subjects[0].lastUpdated.startsWith('2026-11-10'));
+});

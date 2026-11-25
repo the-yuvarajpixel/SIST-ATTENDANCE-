@@ -2,6 +2,7 @@ import type {
   AttendanceSubject,
   DataSourceMode,
   DeadlineItem,
+  ErpUserRole,
   HealthReport,
   NotificationItem,
   PortalSyncReport,
@@ -16,6 +17,7 @@ export interface LoginInput {
   registerNumber: string;
   name?: string;
   mode: DataSourceMode;
+  erpRole?: ErpUserRole;
   erpToken?: string;
   erpUsername?: string;
   erpPassword?: string;
@@ -26,6 +28,7 @@ export interface LoginInput {
 
 export interface ConnectPortalsInput {
   registerNumber?: string;
+  erpRole?: ErpUserRole;
   erpToken?: string;
   erpUsername?: string;
   erpPassword?: string;
@@ -97,8 +100,11 @@ export const api = {
     });
   },
 
-  syncPortals() {
-    return requestJson<PortalSyncReport>('/api/portal/sync', { method: 'POST' });
+  syncPortals(endDate?: string) {
+    return requestJson<PortalSyncReport>('/api/portal/sync', {
+      method: 'POST',
+      body: JSON.stringify(endDate ? { endDate } : {}),
+    });
   },
 
   getHealth(deep = false) {
@@ -116,8 +122,12 @@ export const api = {
     return requestJson<SectionEnvelope<StudentProfile>>(`/api/portal/profile${refresh ? '?refresh=1' : ''}`);
   },
 
-  getAttendance(refresh = false) {
-    return requestJson<SectionEnvelope<AttendanceSubject[]>>(`/api/portal/attendance${refresh ? '?refresh=1' : ''}`);
+  getAttendance(refresh = false, endDate?: string) {
+    const params = new URLSearchParams();
+    if (refresh) params.set('refresh', '1');
+    if (endDate) params.set('endDate', endDate);
+    const qs = params.toString();
+    return requestJson<SectionEnvelope<AttendanceSubject[]>>(`/api/portal/attendance${qs ? `?${qs}` : ''}`);
   },
 
   getTimetable(refresh = false) {

@@ -1,8 +1,9 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import {
   AlertTriangle,
   BookOpen,
   CheckCircle2,
+  Clock,
   ExternalLink,
   Link2,
   Lock,
@@ -12,6 +13,7 @@ import {
 import type {
   AttendanceSubject,
   DeadlineItem,
+  ErpUserRole,
   NavSection,
   NotificationItem,
   PortalSyncReport,
@@ -24,6 +26,8 @@ import { api } from '../lib/api';
 import { formatDateTime } from '../lib/format';
 import type { SectionState } from './OverviewView';
 
+export type AutoSyncIntervalMinutes = 0 | 1 | 5 | 15;
+
 interface PortalSyncViewProps {
   user: SessionUser;
   profile: SectionState<StudentProfile>;
@@ -34,6 +38,9 @@ interface PortalSyncViewProps {
   notifications: SectionState<NotificationItem[]>;
   syncing: boolean;
   lastReport: PortalSyncReport | null;
+  autoSyncMinutes: AutoSyncIntervalMinutes;
+  nextAutoSyncAt: number | null;
+  onChangeAutoSyncMinutes: (minutes: AutoSyncIntervalMinutes) => void;
   onRunSync: () => Promise<void>;
   onPortalsConnected: (user: SessionUser) => Promise<void>;
   onRetrySection: (section: 'profile' | 'attendance' | 'timetable' | 'results' | 'deadlines' | 'notifications') => void;
@@ -44,6 +51,30 @@ type PortalConnectMethod = 'credentials' | 'token';
 
 const MOODLE_LOGIN_URL = 'https://sathyabama.cognibot.in/login/index.php';
 const ERP_URL = 'https://erp.sathyabama.ac.in/account/login';
+const PORTAL_ID_REGEX = /^[A-Za-z0-9_-]{4,20}$/;
+
+const ERP_ROLES: { id: ErpUserRole; label: string; idLabel: string; idPlaceholder: string }[] = [
+  { id: 'student', label: 'Student', idLabel: 'Register Number', idPlaceholder: 'e.g. 42110482' },
+  { id: 'staff', label: 'Staff', idLabel: 'Staff Number', idPlaceholder: 'e.g. STF1042' },
+  { id: 'new-admission', label: 'New Admission', idLabel: 'Admission / Reg. No.', idPlaceholder: 'e.g. ADM2026041' },
+  { id: 'parent', label: 'Parent', idLabel: 'Student Reg. / Parent ID', idPlaceholder: 'e.g. 42110482' },
+];
+
+const AUTO_SYNC_OPTIONS: { value: AutoSyncIntervalMinutes; label: string }[] = [
+  { value: 0, label: 'Off' },
+  { value: 1, label: '1m' },
+  { value: 5, label: '5m' },
+  { value: 15, label: '15m' },
+];
+
+function formatCountdown(targetMs: number | null, nowMs: number): string {
+  if (!targetMs) return '';
+  const diffSec = Math.max(0, Math.ceil((targetMs - nowMs) / 1000));
+  const mins = Math.floor(diffSec / 60);
+  const secs = diffSec % 60;
+  if (mins > 0) return `${mins}m ${String(secs).padStart(2, '0')}s`;
+  return `${secs}s`;
+}
 
 export function PortalSyncView({
   user,
@@ -55,13 +86,16 @@ export function PortalSyncView({
   notifications,
   syncing,
   lastReport,
+  autoSyncMinutes,
+  nextAutoSyncAt,
+  onChangeAutoSyncMinutes,
   onRunSync,
   onPortalsConnected,
   onRetrySection,
   onNavigate,
 }: PortalSyncViewProps) {
   const [moodleMethod, setMoodleMethod] = useState<PortalConnectMethod>('credentials');
-  const [erpMethod, setErpMethod] = useState<PortalConnectMethod>('token');
+  const [erpRole, setErpRole] = useState<ErpUserRole>(user.erpRole ?? 'student');
   const [registerNumber, setRegisterNumber] = useState(user.registerNumber);
   const [lmsUsername, setLmsUsername] = useState('');
   const [lmsPassword, setLmsPassword] = useState('');
@@ -75,7 +109,15 @@ export function PortalSyncView({
   const [connectError, setConnectError] = useState<string | null>(null);
   const [connectErrorCode, setConnectErrorCode] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [nowTick, setNowTick] = useState(() => Date.now());
 
+  useEffect(() => {
+    if (autoSyncMinutes === 0 || !nextAutoSyncAt) return;
+    const timer = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [autoSyncMinutes, nextAutoSyncAt]);
+
+  const roleMeta = ERP_ROLES.find((r) => r.id === erpRole) ?? ERP_ROLES[0];
   const moodleConnectedLive = user.mode === 'live' && user.lmsTokenPresent;
   const erpConnectedLive = user.mode === 'live' && user.erpTokenPresent;
 
@@ -94,15 +136,15 @@ export function PortalSyncView({
     const trimmedLmsUser = lmsUsername.trim();
     const wantsMoodleCreds = moodleMethod === 'credentials' && Boolean(lmsPassword || trimmedLmsUser);
     const wantsMoodleToken = moodleMethod === 'token' && Boolean(trimmedLmsToken);
-    const wantsErpCreds = erpMethod === 'credentials' && Boolean(erpPassword || trimmedErpUser);
-    const wantsErpToken = erpMethod === 'token' && Boolean(trimmedErpToken);
+    const wantsErpToken = Boolean(trimmedErpToken);
+    const wantsErpCreds = !wantsErpToken && Boolean(erpPassword || trimmedErpUser);
 
     const nextErrors: Record<string, string> = {};
-    if (!/^[A-Za-z0-9]{6,14}$/.test(trimmedReg)) {
-      nextErrors.registerNumber = 'Enter a valid Register Number (6–14 letters or digits).';
+    if (!PORTAL_ID_REGEX.test(trimmedReg)) {
+      nextErrors.registerNumber = `Enter a valid ${roleMeta.idLabel} (4–20 letters or digits).`;
     }
     if (!wantsMoodleCreds && !wantsMoodleToken && !wantsErpCreds && !wantsErpToken) {
-      setConnectError('Enter your Moodle LMS or College ERP login credentials/tokens to connect.');
+      setConnectError('Enter your College ERP password/token or Moodle LMS credentials to connect.');
       return;
     }
     if (wantsMoodleCreds && !lmsPassword) {
@@ -112,10 +154,10 @@ export function PortalSyncView({
       nextErrors.lmsToken = 'Moodle LMS token must be at least 8 characters.';
     }
     if (wantsErpCreds && !erpPassword) {
-      nextErrors.erpPassword = 'Enter your College ERP password.';
+      nextErrors.erpPassword = `Enter your ${roleMeta.label} ERP password (or paste an optional ERP Access-Token).`;
     }
     if (wantsErpToken && trimmedErpToken.length < 8) {
-      nextErrors.erpToken = 'ERP token must be at least 8 characters.';
+      nextErrors.erpToken = 'ERP Access-Token must be at least 8 characters.';
     }
 
     if (Object.keys(nextErrors).length > 0) {
@@ -128,6 +170,7 @@ export function PortalSyncView({
     try {
       const res = await api.connectPortals({
         registerNumber: trimmedReg,
+        erpRole,
         erpToken: wantsErpToken ? trimmedErpToken : undefined,
         erpUsername: wantsErpCreds ? trimmedErpUser || trimmedReg : undefined,
         erpPassword: wantsErpCreds ? erpPassword : undefined,
@@ -141,15 +184,14 @@ export function PortalSyncView({
       setErpToken('');
       await onPortalsConnected(res.user);
       const connectedNames = [
+        res.user.erpTokenPresent ? `College ERP (${roleMeta.label})` : null,
         res.user.lmsTokenPresent ? 'Moodle LMS' : null,
-        res.user.erpTokenPresent ? 'College ERP' : null,
       ]
         .filter(Boolean)
         .join(' & ');
-      setConnectMessage(`Connected ${connectedNames} and synced live data.`);
+      setConnectMessage(`Connected ${connectedNames} and updated all portal sections.`);
       if (res.warning) {
         setConnectWarning(res.warning);
-        setErpMethod('token');
       }
     } catch (err) {
       const eObj = err as Error & { code?: string; fieldErrors?: Record<string, string> };
@@ -170,7 +212,7 @@ export function PortalSyncView({
   }[] = [
     {
       key: 'profile',
-      label: 'Student Profile',
+      label: 'Profile & Account Role',
       portal: erpConnectedLive ? 'College ERP' : user.mode === 'live' ? 'Moodle LMS' : 'College ERP',
       state: profile,
       countLabel: profile.envelope ? '1 profile' : '—',
@@ -191,7 +233,7 @@ export function PortalSyncView({
     },
     {
       key: 'results',
-      label: 'Results & CGPA History',
+      label: 'Results, CAE Marks & CGPA',
       portal: 'College ERP',
       state: results,
       countLabel: results.envelope ? `${results.envelope.data.semesters.length} semesters` : '—',
@@ -214,15 +256,15 @@ export function PortalSyncView({
 
   return (
     <div className="space-y-6">
-      {/* Top Dual-Portal Sync Summary */}
+      {/* Top Dual-Portal Sync & Auto-Update All Sites Summary */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 sm:p-6 space-y-5">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div>
             <h2 className="font-display text-xl font-bold text-slate-900 dark:text-slate-50">
-              Sync Moodle LMS &amp; College ERP
+              Sync ERP Portal &amp; Auto-Update All Sites
             </h2>
             <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-              Sync both Sathyabama portals together, or connect/refresh your Moodle LMS and College ERP tokens in place.
+              Automatically keeps College ERP and Moodle LMS synchronized across attendance, timetable, CAE marks, CGPA, deadlines, and notices.
             </p>
           </div>
 
@@ -242,13 +284,115 @@ export function PortalSyncView({
               className="inline-flex items-center gap-2 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-4 py-2 text-xs font-medium text-white transition-colors whitespace-nowrap cursor-pointer disabled:opacity-50"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${syncing ? 'animate-spin' : ''}`} aria-hidden="true" />
-              {syncing ? 'Syncing LMS & ERP...' : 'Sync Moodle LMS & College ERP'}
+              {syncing ? 'Updating All Sites...' : 'Update All Sites Now'}
             </button>
+          </div>
+        </div>
+
+        {/* Auto-Update Schedule Bar */}
+        <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-2.5 min-w-0">
+            <Clock className="h-4 w-4 text-blue-700 dark:text-blue-400 shrink-0 mt-0.5 sm:mt-0" aria-hidden="true" />
+            <div className="text-xs text-slate-600 dark:text-slate-400 min-w-0">
+              <span className="font-semibold text-slate-900 dark:text-slate-100">
+                Auto-Update All Sites
+              </span>
+              <span aria-hidden="true"> · </span>
+              {autoSyncMinutes === 0 ? (
+                <span>Paused (manual refresh only)</span>
+              ) : (
+                <span className="font-mono tabular-nums">
+                  Every {autoSyncMinutes} min
+                  {nextAutoSyncAt ? ` · Next update in ${formatCountdown(nextAutoSyncAt, nowTick)}` : ''}
+                  {' · Also syncs on tab focus'}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div
+            role="group"
+            aria-label="Auto-update interval"
+            className="inline-flex items-center gap-1 rounded-lg bg-slate-200/70 dark:bg-slate-800 p-0.5 shrink-0 self-start sm:self-auto"
+          >
+            {AUTO_SYNC_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                aria-pressed={autoSyncMinutes === opt.value}
+                onClick={() => onChangeAutoSyncMinutes(opt.value)}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium font-mono tabular-nums transition-colors whitespace-nowrap cursor-pointer ${
+                  autoSyncMinutes === opt.value
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
           </div>
         </div>
 
         {/* Two Portal Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* College ERP Card */}
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-4 space-y-2.5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  Sathyabama College ERP
+                </p>
+                <a
+                  href={ERP_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 font-mono text-xs text-slate-500 dark:text-slate-400 hover:text-blue-700 dark:hover:text-blue-400 mt-0.5"
+                >
+                  erp.sathyabama.ac.in
+                  <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+                </a>
+              </div>
+              <span
+                className={`inline-flex items-center gap-1 text-xs font-medium shrink-0 ${
+                  erpConnectedLive
+                    ? 'text-emerald-700 dark:text-emerald-400'
+                    : user.mode === 'mock'
+                      ? 'text-blue-700 dark:text-blue-400'
+                      : 'text-amber-700 dark:text-amber-400'
+                }`}
+              >
+                {erpConnectedLive ? (
+                  <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                ) : (
+                  <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                {erpConnectedLive
+                  ? 'Live Connected'
+                  : user.mode === 'mock'
+                    ? 'Sample Data'
+                    : 'Not Connected'}
+              </span>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+              {lastReport
+                ? lastReport.erp.message
+                : erpConnectedLive
+                  ? 'Syncs live attendance by date, weekly timetable, CAE marks, CGPA results, and ERP circulars.'
+                  : 'Select your ERP role (Student / Staff / New Admission / Parent) and log in below, or paste an optional Access-Token.'}
+            </p>
+            <div className="pt-1">
+              <a
+                href={ERP_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline"
+              >
+                Login directly on ERP portal
+                <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+              </a>
+            </div>
+          </div>
+
           {/* Moodle LMS Card */}
           <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-4 space-y-2.5">
             <div className="flex items-start justify-between gap-3">
@@ -301,65 +445,7 @@ export function PortalSyncView({
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline"
               >
-                Sign in directly on Moodle website
-                <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
-              </a>
-            </div>
-          </div>
-
-          {/* College ERP Card */}
-          <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-4 space-y-2.5">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  Sathyabama College ERP
-                </p>
-                <a
-                  href={ERP_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 font-mono text-xs text-slate-500 dark:text-slate-400 hover:text-blue-700 dark:hover:text-blue-400 mt-0.5"
-                >
-                  erp.sathyabama.ac.in
-                  <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
-                </a>
-              </div>
-              <span
-                className={`inline-flex items-center gap-1 text-xs font-medium shrink-0 ${
-                  erpConnectedLive
-                    ? 'text-emerald-700 dark:text-emerald-400'
-                    : user.mode === 'mock'
-                      ? 'text-blue-700 dark:text-blue-400'
-                      : 'text-amber-700 dark:text-amber-400'
-                }`}
-              >
-                {erpConnectedLive ? (
-                  <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-                ) : (
-                  <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
-                )}
-                {erpConnectedLive
-                  ? 'Live Connected'
-                  : user.mode === 'mock'
-                    ? 'Sample Data'
-                    : 'Not Connected'}
-              </span>
-            </div>
-            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-              {lastReport
-                ? lastReport.erp.message
-                : erpConnectedLive
-                  ? 'Syncs live subject attendance, weekly timetable, semester CGPA results, and ERP circulars.'
-                  : 'Sign in directly on erp.sathyabama.ac.in and paste your Access-Token below to sync live attendance, timetable, and CGPA.'}
-            </p>
-            <div className="pt-1">
-              <a
-                href={ERP_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline"
-              >
-                Sign in directly on ERP website
+                Login directly on Moodle website
                 <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
               </a>
             </div>
@@ -386,11 +472,11 @@ export function PortalSyncView({
             <div className="flex items-center gap-2">
               <Link2 className="h-4 w-4 text-blue-700 dark:text-blue-400 shrink-0" aria-hidden="true" />
               <h3 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
-                Connect or Refresh Live Credentials
+                Login Through ERP Portal &amp; Connect Moodle LMS
               </h3>
             </div>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              Connect Moodle LMS, College ERP, or both at once. Existing live tokens are preserved when updating just one portal.
+              Select Student, Staff, New Admission, or Parent, enter your Register / Staff Number and Password (or optional ERP Access-Token), and sync both sites.
             </p>
           </div>
           <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 shrink-0">
@@ -414,21 +500,9 @@ export function PortalSyncView({
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1.5 rounded-md bg-red-700 hover:bg-red-800 dark:bg-red-600 dark:hover:bg-red-500 px-3 py-1.5 text-xs font-medium text-white transition-colors"
                   >
-                    Sign in on erp.sathyabama.ac.in
+                    Login on erp.sathyabama.ac.in
                     <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
                   </a>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setErpMethod('token');
-                      setConnectError(null);
-                      setConnectErrorCode(null);
-                      setFieldErrors({});
-                    }}
-                    className="inline-flex items-center rounded-md border border-red-300 dark:border-red-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-red-800 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors cursor-pointer"
-                  >
-                    Switch to Paste ERP Token
-                  </button>
                 </div>
               ) : null}
             </div>
@@ -456,38 +530,153 @@ export function PortalSyncView({
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 font-medium text-amber-900 dark:text-amber-200 underline shrink-0"
               >
-                Sign in on erp.sathyabama.ac.in
+                Login on erp.sathyabama.ac.in
                 <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
               </a>
             </div>
           ) : null}
 
-          <div className="max-w-xs">
-            <label
-              htmlFor="syncRegisterNumber"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5"
-            >
-              Sathyabama Register Number
-            </label>
-            <input
-              id="syncRegisterNumber"
-              type="text"
-              value={registerNumber}
-              onChange={(e) => setRegisterNumber(e.target.value)}
-              placeholder="e.g. 42110482"
-              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3.5 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
-            />
-            {fieldErrors.registerNumber ? (
-              <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.registerNumber}</p>
-            ) : null}
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+            <div className="md:col-span-7 space-y-1.5">
+              <span className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+                ERP Account Type
+              </span>
+              <div
+                role="radiogroup"
+                aria-label="ERP account type"
+                className="grid grid-cols-2 sm:grid-cols-4 gap-1 rounded-lg bg-slate-100 dark:bg-slate-800/80 p-1"
+              >
+                {ERP_ROLES.map((item) => {
+                  const active = erpRole === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      onClick={() => {
+                        setErpRole(item.id);
+                        setFieldErrors({});
+                      }}
+                      className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        active
+                          ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="md:col-span-5">
+              <label
+                htmlFor="syncRegisterNumber"
+                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5"
+              >
+                {roleMeta.idLabel}
+              </label>
+              <input
+                id="syncRegisterNumber"
+                type="text"
+                value={registerNumber}
+                onChange={(e) => setRegisterNumber(e.target.value)}
+                placeholder={roleMeta.idPlaceholder}
+                className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3.5 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+              />
+              {fieldErrors.registerNumber ? (
+                <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.registerNumber}</p>
+              ) : null}
+            </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-            {/* Moodle LMS Inputs */}
+            {/* 1. College ERP Inputs (Password + Optional Token) */}
             <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-4 space-y-3.5">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  1. Moodle LMS
+                  1. College ERP ({roleMeta.label})
+                </p>
+                <a
+                  href={ERP_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline whitespace-nowrap"
+                >
+                  Open ERP Portal
+                  <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+                </a>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor="syncErpUsername"
+                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                  >
+                    ERP {roleMeta.idLabel}
+                  </label>
+                  <input
+                    id="syncErpUsername"
+                    type="text"
+                    value={erpUsername}
+                    onChange={(e) => setErpUsername(e.target.value)}
+                    placeholder={registerNumber.trim() || roleMeta.idPlaceholder}
+                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+                  />
+                  {fieldErrors.erpUsername ? (
+                    <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.erpUsername}</p>
+                  ) : null}
+                </div>
+                <div>
+                  <label
+                    htmlFor="syncErpPassword"
+                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                  >
+                    ERP Password
+                  </label>
+                  <input
+                    id="syncErpPassword"
+                    type="password"
+                    value={erpPassword}
+                    onChange={(e) => setErpPassword(e.target.value)}
+                    placeholder="Exchanged via erp.sathyabama.ac.in"
+                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+                  />
+                  {fieldErrors.erpPassword ? (
+                    <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.erpPassword}</p>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-slate-200/80 dark:border-slate-800/80 space-y-1.5">
+                <label
+                  htmlFor="syncErpToken"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+                >
+                  ERP Access-Token (optional)
+                </label>
+                <input
+                  id="syncErpToken"
+                  type="password"
+                  value={erpToken}
+                  onChange={(e) => setErpToken(e.target.value)}
+                  placeholder="Optional: paste Access-Token or session cookie"
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+                />
+                {fieldErrors.erpToken ? (
+                  <p className="text-xs text-red-700 dark:text-red-400">{fieldErrors.erpToken}</p>
+                ) : null}
+              </div>
+            </div>
+
+            {/* 2. Moodle LMS Inputs */}
+            <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-4 space-y-3.5">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  2. Moodle LMS
                 </p>
                 <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 p-0.5 bg-slate-50 dark:bg-slate-950">
                   <button
@@ -522,7 +711,7 @@ export function PortalSyncView({
                       htmlFor="syncLmsUsername"
                       className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                     >
-                      Moodle Username (optional if same as Register Number)
+                      Moodle Username (optional if same as ID)
                     </label>
                     <input
                       id="syncLmsUsername"
@@ -578,118 +767,6 @@ export function PortalSyncView({
                 </div>
               )}
             </div>
-
-            {/* College ERP Inputs */}
-            <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-4 space-y-3.5">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  2. College ERP
-                </p>
-                <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 p-0.5 bg-slate-50 dark:bg-slate-950">
-                  <button
-                    type="button"
-                    onClick={() => setErpMethod('credentials')}
-                    className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
-                      erpMethod === 'credentials'
-                        ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-50 shadow-xs'
-                        : 'text-slate-600 dark:text-slate-400'
-                    }`}
-                  >
-                    ERP Login
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setErpMethod('token')}
-                    className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
-                      erpMethod === 'token'
-                        ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-50 shadow-xs'
-                        : 'text-slate-600 dark:text-slate-400'
-                    }`}
-                  >
-                    Paste Token
-                  </button>
-                </div>
-              </div>
-
-              {erpMethod === 'credentials' ? (
-                <>
-                  <div>
-                    <label
-                      htmlFor="syncErpUsername"
-                      className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-                    >
-                      ERP Username (optional if same as Register Number)
-                    </label>
-                    <input
-                      id="syncErpUsername"
-                      type="text"
-                      value={erpUsername}
-                      onChange={(e) => setErpUsername(e.target.value)}
-                      placeholder={registerNumber.trim() || 'e.g. 42110482'}
-                      className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
-                    />
-                    {fieldErrors.erpUsername ? (
-                      <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.erpUsername}</p>
-                    ) : null}
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="syncErpPassword"
-                      className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-                    >
-                      College ERP Password
-                    </label>
-                    <input
-                      id="syncErpPassword"
-                      type="password"
-                      value={erpPassword}
-                      onChange={(e) => setErpPassword(e.target.value)}
-                      placeholder="Exchanged once via erp.sathyabama.ac.in"
-                      className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
-                    />
-                    {fieldErrors.erpPassword ? (
-                      <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.erpPassword}</p>
-                    ) : null}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div>
-                    <label
-                      htmlFor="syncErpToken"
-                      className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-                    >
-                      ERP Access-Token or Session Cookie
-                    </label>
-                    <input
-                      id="syncErpToken"
-                      type="password"
-                      value={erpToken}
-                      onChange={(e) => setErpToken(e.target.value)}
-                      placeholder="Paste Access-Token, Bearer JWT, or session cookie"
-                      className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
-                    />
-                    {fieldErrors.erpToken ? (
-                      <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.erpToken}</p>
-                    ) : null}
-                  </div>
-
-                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                    Quick tip: Sign in at{' '}
-                    <a
-                      href={ERP_URL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-mono text-blue-700 dark:text-blue-400 hover:underline"
-                    >
-                      erp.sathyabama.ac.in
-                    </a>
-                    , press <span className="font-mono">F12</span> → <em>Application</em> → <em>Local Storage</em> → copy{' '}
-                    <span className="font-mono text-slate-700 dark:text-slate-300">Access-Token</span>.
-                  </p>
-                </>
-              )}
-            </div>
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-3">
@@ -699,7 +776,7 @@ export function PortalSyncView({
               className="inline-flex items-center gap-2 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-5 py-2.5 text-xs font-medium text-white transition-colors cursor-pointer disabled:opacity-50"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${connecting ? 'animate-spin' : ''}`} aria-hidden="true" />
-              {connecting ? 'Connecting & Syncing...' : 'Connect & Sync Live'}
+              {connecting ? 'Connecting & Updating All Sites...' : 'Login Through ERP & Sync All'}
             </button>
           </div>
         </form>

@@ -6,6 +6,7 @@ import {
   computeAttendanceStats,
   computeOverallAttendance,
   getLatestAttendanceDate,
+  normalizeAttendanceEndDate,
   simulateAttendance,
 } from './attendance';
 import {
@@ -17,7 +18,7 @@ import {
   planTargetCgpa,
 } from './gpa';
 import { buildCaeTermTrend } from './cae';
-import { deduplicateDeadlines, findNextClass } from './schedule';
+import { deduplicateDeadlines, findNextClass, getUpcomingErpExams } from './schedule';
 import { TwoTierCache } from './cache';
 import { SchemaValidationError, validateAttendance, validateDeadlines } from './schemas';
 import type { AttendanceSubject, DeadlineItem, SemesterResult, TimetableSlot } from './types';
@@ -424,3 +425,52 @@ test('clearing a user prevents an in-flight request from repopulating cache', as
   cache.clearUser('a');
   assert.equal((await cache.getOrFetch('a:b', 'c', 10000, async () => 'wrong')).data, 'first');
 });
+
+test('normalizeAttendanceEndDate clamps future dates and rejects impossible calendar dates', () => {
+  const fixedNow = new Date(2026, 10, 25); // 2026-11-25
+  assert.equal(normalizeAttendanceEndDate('2026-11-10', fixedNow), '2026-11-10');
+  assert.equal(normalizeAttendanceEndDate('2026-12-31', fixedNow), '2026-11-25');
+  assert.equal(normalizeAttendanceEndDate('2026-02-31', fixedNow), '2026-11-25');
+  assert.equal(normalizeAttendanceEndDate('not-a-date', fixedNow), '2026-11-25');
+  assert.equal(normalizeAttendanceEndDate(undefined, fixedNow), '2026-11-25');
+});
+
+test('getUpcomingErpExams filters ERP exam deadlines, excludes past/completed, and computes days remaining', () => {
+  const now = new Date(2026, 10, 25, 10, 0, 0); // 25 Nov 2026 10:00 local
+  const isoAt = (dayOffset: number, hour: number) =>
+    new Date(2026, 10, 25 + dayOffset, hour, 0, 0).toISOString();
+
+  const items: DeadlineItem[] = [
+    { id: 'past-exam', title: 'CAE I', dueAt: isoAt(-1, 9), kind: 'exam', origin: 'ERP' },
+    { id: 'lms-only-exam', title: 'Moodle Quiz', dueAt: isoAt(2, 9), kind: 'exam', origin: 'LMS' },
+    { id: 'erp-fee', title: 'Exam Fee', dueAt: isoAt(2, 17), kind: 'fee', origin: 'ERP' },
+    { id: 'completed-exam', title: 'Completed Viva', dueAt: isoAt(1, 9), kind: 'exam', origin: 'ERP' },
+    { id: 'today-exam', title: 'Lab Practical', courseCode: 'SCSA2601', dueAt: isoAt(0, 14), kind: 'exam', origin: 'ERP' },
+    { id: 'later-exam', title: 'CAE II — Computer Networks', courseCode: 'SCSA1601', dueAt: isoAt(8, 9), kind: 'exam', origin: 'ERP' },
+    { id: 'merged-exam', title: 'CAE II — Compiler Design', courseCode: 'SCSA1602', dueAt: isoAt(3, 9), kind: 'exam', origin: 'ERP + LMS' },
+    { id: 'bad-date', title: 'Malformed', dueAt: 'invalid-date', kind: 'exam', origin: 'ERP' },
+  ];
+
+  const upcoming = getUpcomingErpExams(items, {
+    now,
+    completedIds: new Set(['completed-exam']),
+  });
+
+  assert.equal(upcoming.length, 3);
+  assert.equal(upcoming[0].item.id, 'today-exam');
+  assert.equal(upcoming[0].daysRemaining, 0);
+  assert.equal(upcoming[0].hoursRemaining, 4);
+  assert.equal(upcoming[0].urgency, 'today');
+  assert.equal(upcoming[0].countdownLabel, 'Today · 4h left');
+
+  assert.equal(upcoming[1].item.id, 'merged-exam');
+  assert.equal(upcoming[1].daysRemaining, 3);
+  assert.equal(upcoming[1].urgency, 'soon');
+  assert.equal(upcoming[1].countdownLabel, '3 days left');
+
+  assert.equal(upcoming[2].item.id, 'later-exam');
+  assert.equal(upcoming[2].daysRemaining, 8);
+  assert.equal(upcoming[2].urgency, 'upcoming');
+  assert.equal(upcoming[2].countdownLabel, '8 days left');
+});
+
