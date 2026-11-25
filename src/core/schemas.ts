@@ -277,6 +277,32 @@ export function validateResults(input: unknown): ResultsPayload {
         );
         const rawStanding = item.standing as CaeStanding;
         const standing: CaeStanding = VALID_CAE_STANDINGS.has(rawStanding) ? rawStanding : 'pending';
+        const classAvgCae1 =
+          item.classAvgCae1 === null || item.classAvgCae1 === undefined
+            ? undefined
+            : assertFiniteNumber(item.classAvgCae1, `caeMarks[${idx}].classAvgCae1`, issues, 0, cae1Max);
+        const classAvgCae2 =
+          item.classAvgCae2 === null || item.classAvgCae2 === undefined
+            ? undefined
+            : assertFiniteNumber(item.classAvgCae2, `caeMarks[${idx}].classAvgCae2`, issues, 0, cae2Max);
+        const classAvgBonus =
+          item.classAvgBonus === null || item.classAvgBonus === undefined
+            ? undefined
+            : assertFiniteNumber(
+                item.classAvgBonus,
+                `caeMarks[${idx}].classAvgBonus`,
+                issues,
+                0,
+                Math.max(internalBonusMax, 100)
+              );
+        const classAvgInternal =
+          item.classAvgInternal === null || item.classAvgInternal === undefined
+            ? undefined
+            : assertFiniteNumber(item.classAvgInternal, `caeMarks[${idx}].classAvgInternal`, issues, 0, internalMax);
+        const classTopInternal =
+          item.classTopInternal === null || item.classTopInternal === undefined
+            ? undefined
+            : assertFiniteNumber(item.classTopInternal, `caeMarks[${idx}].classTopInternal`, issues, 0, internalMax);
         return {
           courseCode: assertNonEmptyString(item.courseCode, `caeMarks[${idx}].courseCode`, issues),
           courseName: assertNonEmptyString(item.courseName, `caeMarks[${idx}].courseName`, issues),
@@ -291,6 +317,11 @@ export function validateResults(input: unknown): ResultsPayload {
           internalMax,
           standing,
           remarks: typeof item.remarks === 'string' && item.remarks.trim() ? item.remarks.trim() : undefined,
+          classAvgCae1,
+          classAvgCae2,
+          classAvgBonus,
+          classAvgInternal,
+          classTopInternal,
         };
       });
     }

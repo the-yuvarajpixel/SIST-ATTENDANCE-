@@ -1,9 +1,22 @@
-import { useEffect, useState } from 'react';
-import { ArrowRight, CalendarClock, TrendingUp } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ArrowRight, CalendarClock, TrendingDown, TrendingUp } from 'lucide-react';
+import {
+  Area,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import {
   analyzeAttendanceInsights,
+  buildWeeklyAttendanceTrend,
   computeAttendanceStats,
   computeOverallAttendance,
+  type WeeklyAttendancePoint,
 } from '../core/attendance';
 import { computeCgpaSummary } from '../core/gpa';
 import { findNextClass, getUpcomingErpExams } from '../core/schedule';
@@ -43,6 +56,114 @@ interface OverviewViewProps {
 
 const TARGET_OPTIONS = [75, 80, 85] as const;
 
+interface WeeklyAttendanceTooltipProps {
+  active?: boolean;
+  payload?: Array<{ payload: WeeklyAttendancePoint }>;
+  targetPercent: number;
+}
+
+function WeeklyAttendanceTooltip({
+  active,
+  payload,
+  targetPercent,
+}: WeeklyAttendanceTooltipProps) {
+  if (!active || !payload || payload.length === 0) return null;
+  const point = payload[0]?.payload;
+  if (!point) return null;
+
+  return (
+    <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3.5 py-2.5 shadow-lg text-xs space-y-1.5 max-w-[300px]">
+      <div className="flex items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-1.5">
+        <span className="font-display font-semibold text-slate-900 dark:text-slate-50 whitespace-nowrap">
+          {point.weekLabel} · {point.dateRangeLabel}
+        </span>
+        {point.isSignificantDrop ? (
+          <span className="font-medium text-red-700 dark:text-red-400">Dip</span>
+        ) : null}
+      </div>
+
+      <div className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-1 font-mono tabular-nums">
+        <span className="text-slate-500 dark:text-slate-400 whitespace-nowrap">Weekly Rate</span>
+        <span
+          className={`text-right font-semibold whitespace-nowrap ${
+            point.weeklyPercentage < targetPercent
+              ? 'text-red-700 dark:text-red-400'
+              : 'text-slate-900 dark:text-slate-50'
+          }`}
+        >
+          {point.weeklyPercentage.toFixed(1)}%
+        </span>
+
+        <span className="text-slate-500 dark:text-slate-400 whitespace-nowrap">Classes</span>
+        <span className="text-right text-slate-700 dark:text-slate-300 whitespace-nowrap">
+          {point.attendedInWeek}/{point.heldInWeek} ({point.missedInWeek} missed)
+        </span>
+
+        <span className="text-slate-500 dark:text-slate-400 whitespace-nowrap">Cumulative</span>
+        <span className="text-right text-slate-700 dark:text-slate-300 whitespace-nowrap">
+          {point.cumulativePercentage.toFixed(1)}%
+        </span>
+
+        {point.deltaFromPrevWeek !== null ? (
+          <>
+            <span className="text-slate-500 dark:text-slate-400">vs Prior Week</span>
+            <span
+              className={`text-right font-medium ${
+                point.deltaFromPrevWeek <= -8
+                  ? 'text-red-700 dark:text-red-400'
+                  : point.deltaFromPrevWeek < 0
+                    ? 'text-amber-700 dark:text-amber-400'
+                    : 'text-emerald-700 dark:text-emerald-400'
+              }`}
+            >
+              {point.deltaFromPrevWeek >= 0 ? '+' : ''}
+              {point.deltaFromPrevWeek.toFixed(1)} pts
+            </span>
+          </>
+        ) : null}
+      </div>
+
+      {point.dropReason ? (
+        <p className="pt-1 border-t border-slate-100 dark:border-slate-800 text-red-700 dark:text-red-400 leading-relaxed">
+          {point.dropReason}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+interface WeeklyDotProps {
+  cx?: number;
+  cy?: number;
+  payload?: WeeklyAttendancePoint;
+}
+
+function WeeklyTrendDot({ cx, cy, payload }: WeeklyDotProps) {
+  if (typeof cx !== 'number' || typeof cy !== 'number' || !payload) return null;
+  if (payload.isSignificantDrop) {
+    return (
+      <circle
+        cx={cx}
+        cy={cy}
+        r={5}
+        fill="var(--chart-warning)"
+        stroke="var(--chart-dot-fill)"
+        strokeWidth={2}
+      />
+    );
+  }
+  return (
+    <circle
+      cx={cx}
+      cy={cy}
+      r={3.5}
+      fill="var(--chart-dot-fill)"
+      stroke="var(--chart-actual)"
+      strokeWidth={2}
+    />
+  );
+}
+
 export function OverviewView({
   profile,
   attendance,
@@ -60,6 +181,8 @@ export function OverviewView({
   const [showAllPriorities, setShowAllPriorities] = useState(false);
   const [showAllExams, setShowAllExams] = useState(false);
   const [expandedExamId, setExpandedExamId] = useState<string | null>(null);
+  const [trendCourseScope, setTrendCourseScope] = useState<string>('all');
+  const [showCumulativeLine, setShowCumulativeLine] = useState(true);
   const [now, setNow] = useState<Date>(() => new Date());
 
   useEffect(() => {
@@ -74,6 +197,36 @@ export function OverviewView({
   const deadlineList = deadlines.envelope?.data ?? [];
   const notificationList = notifications.envelope?.data ?? [];
   const resultsData = results.envelope?.data ?? null;
+
+  const effectiveTrendScope =
+    trendCourseScope === 'all' ||
+    attendanceList.some((s) => s.courseCode === trendCourseScope)
+      ? trendCourseScope
+      : 'all';
+
+  const weeklyTrend = useMemo(
+    () =>
+      buildWeeklyAttendanceTrend(
+        attendanceList,
+        timetableList,
+        attendanceTarget,
+        effectiveTrendScope,
+        now
+      ),
+    [attendanceList, timetableList, attendanceTarget, effectiveTrendScope, now]
+  );
+
+  const weeklyYDomain = useMemo<[number, number]>(() => {
+    if (weeklyTrend.points.length === 0) return [40, 100];
+    const vals: number[] = [attendanceTarget];
+    for (const pt of weeklyTrend.points) {
+      vals.push(pt.weeklyPercentage);
+      if (showCumulativeLine) vals.push(pt.cumulativePercentage);
+    }
+    const minVal = Math.min(...vals);
+    const floor = Math.max(0, Math.floor((minVal - 10) / 10) * 10);
+    return [Math.min(floor, 60), 100];
+  }, [weeklyTrend, attendanceTarget, showCumulativeLine]);
 
   const nextClass = findNextClass(timetableList, attendanceList, now, attendanceTarget);
   const overallAttendance = computeOverallAttendance(attendanceList, attendanceTarget);
@@ -278,6 +431,287 @@ export function OverviewView({
             ERP circulars &amp; Moodle LMS
           </p>
         </button>
+      </section>
+
+      {/* Weekly Attendance Fluctuations Trend Line Chart */}
+      <section
+        aria-label="Weekly attendance trend"
+        className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden"
+      >
+        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
+              Weekly Attendance Trend
+            </h3>
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-x-2 gap-y-1">
+              {attendance.loading && !attendance.envelope ? (
+                <span>Loading weekly attendance fluctuations...</span>
+              ) : weeklyTrend.biggestDropWeek ? (
+                <>
+                  <span className="inline-flex items-center gap-1 font-medium text-red-700 dark:text-red-400">
+                    <TrendingDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    Significant dip in {weeklyTrend.biggestDropWeek.weekLabel} (
+                    {weeklyTrend.biggestDropWeek.dateRangeLabel} ·{' '}
+                    <span className="font-mono tabular-nums">
+                      {weeklyTrend.biggestDropWeek.weeklyPercentage.toFixed(1)}%
+                    </span>
+                    {weeklyTrend.biggestDropWeek.deltaFromPrevWeek !== null ? (
+                      <span className="font-mono tabular-nums">
+                        , {weeklyTrend.biggestDropWeek.deltaFromPrevWeek.toFixed(1)} pts
+                      </span>
+                    ) : null}
+                    )
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-mono tabular-nums">
+                    Avg {weeklyTrend.averageWeeklyPercent.toFixed(1)}%/wk
+                  </span>
+                </>
+              ) : weeklyTrend.points.length > 0 ? (
+                <>
+                  <span className="font-medium text-emerald-700 dark:text-emerald-400">
+                    Steady weekly attendance — no sharp drops
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-mono tabular-nums">
+                    Avg {weeklyTrend.averageWeeklyPercent.toFixed(1)}%/wk
+                  </span>
+                </>
+              ) : (
+                <span>Track week-by-week attendance fluctuations and dip periods</span>
+              )}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            {attendanceList.length > 0 ? (
+              <select
+                aria-label="Filter weekly attendance trend by course"
+                value={effectiveTrendScope}
+                onChange={(e) => setTrendCourseScope(e.target.value)}
+                className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-600/30 cursor-pointer max-w-[230px] truncate"
+              >
+                <option value="all">All courses ({attendanceList.length})</option>
+                {attendanceList.map((subject) => (
+                  <option key={subject.courseCode} value={subject.courseCode}>
+                    {subject.courseCode} · {subject.courseName}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={() => setShowCumulativeLine((prev) => !prev)}
+              aria-pressed={showCumulativeLine}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                showCumulativeLine
+                  ? 'border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100'
+                  : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/60'
+              }`}
+            >
+              {showCumulativeLine ? 'Hide Cumulative' : 'Show Cumulative'}
+            </button>
+          </div>
+        </div>
+
+        {attendance.loading && !attendance.envelope ? (
+          <div className="p-5">
+            <SectionSkeleton rows={3} />
+          </div>
+        ) : attendance.error && !attendance.envelope ? (
+          <div className="p-5">
+            <SectionError
+              sectionName="Weekly Attendance Trend"
+              message={attendance.error}
+              onRetry={() => onRetrySection('attendance')}
+            />
+          </div>
+        ) : weeklyTrend.points.length === 0 ? (
+          <div className="p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                No weekly attendance data yet
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Sync College ERP attendance to visualize week-over-week fluctuations and dip periods.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate('sync')}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 px-3.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              Sync ERP Portal
+            </button>
+          </div>
+        ) : (
+          <div>
+            <div className="p-5 space-y-4">
+              {/* Inline Legend */}
+              <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-2 text-xs text-slate-600 dark:text-slate-400">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span
+                      className="inline-block h-0.5 w-4 rounded-full"
+                      style={{ backgroundColor: 'var(--chart-actual)' }}
+                      aria-hidden="true"
+                    />
+                    Weekly Attendance %
+                  </span>
+                  {showCumulativeLine ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <span
+                        className="inline-block h-0.5 w-4 border-t-2 border-dashed"
+                        style={{ borderColor: 'var(--chart-projected)' }}
+                        aria-hidden="true"
+                      />
+                      Cumulative Overall %
+                    </span>
+                  ) : null}
+                  <span className="inline-flex items-center gap-1.5">
+                    <span
+                      className="inline-block h-0.5 w-4 border-t-2 border-dotted"
+                      style={{ borderColor: 'var(--chart-target)' }}
+                      aria-hidden="true"
+                    />
+                    Target ({attendanceTarget}%)
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span
+                      className="inline-block h-2.5 w-2.5 rounded-full"
+                      style={{ backgroundColor: 'var(--chart-warning)' }}
+                      aria-hidden="true"
+                    />
+                    Significant Drop
+                  </span>
+                </div>
+                <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                  {weeklyTrend.points.length} weeks · Current {weeklyTrend.currentCumulativePercent.toFixed(1)}%
+                </span>
+              </div>
+
+              {/* Recharts Trend Line Chart */}
+              <div className="h-[240px] sm:h-[260px] w-full min-w-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart
+                    data={weeklyTrend.points}
+                    margin={{ top: 10, right: 16, left: -8, bottom: 4 }}
+                  >
+                    <defs>
+                      <linearGradient id="weeklyAttendanceFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="var(--chart-actual)" stopOpacity={0.18} />
+                        <stop offset="95%" stopColor="var(--chart-actual)" stopOpacity={0.01} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid
+                      strokeDasharray="3 3"
+                      vertical={false}
+                      stroke="var(--chart-grid)"
+                    />
+                    <XAxis
+                      dataKey="weekLabel"
+                      tick={{
+                        fill: 'var(--chart-axis)',
+                        fontSize: 12,
+                        fontFamily: 'var(--font-mono)',
+                      }}
+                      tickLine={false}
+                      axisLine={{ stroke: 'var(--chart-grid)' }}
+                      dy={6}
+                    />
+                    <YAxis
+                      domain={weeklyYDomain}
+                      tick={{
+                        fill: 'var(--chart-axis)',
+                        fontSize: 12,
+                        fontFamily: 'var(--font-mono)',
+                      }}
+                      tickLine={false}
+                      axisLine={false}
+                      tickFormatter={(v: number) => `${v}%`}
+                    />
+                    <Tooltip
+                      content={<WeeklyAttendanceTooltip targetPercent={attendanceTarget} />}
+                    />
+                    <ReferenceLine
+                      y={attendanceTarget}
+                      stroke="var(--chart-target)"
+                      strokeDasharray="4 4"
+                      strokeWidth={1.5}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="weeklyPercentage"
+                      name="Weekly Attendance %"
+                      stroke="var(--chart-actual)"
+                      strokeWidth={2.5}
+                      fill="url(#weeklyAttendanceFill)"
+                      dot={<WeeklyTrendDot />}
+                      activeDot={{ r: 6 }}
+                      isAnimationActive={false}
+                    />
+                    {showCumulativeLine ? (
+                      <Line
+                        type="monotone"
+                        dataKey="cumulativePercentage"
+                        name="Cumulative Overall %"
+                        stroke="var(--chart-projected)"
+                        strokeWidth={1.75}
+                        strokeDasharray="5 4"
+                        dot={{
+                          r: 2.5,
+                          fill: 'var(--chart-dot-fill)',
+                          stroke: 'var(--chart-projected)',
+                          strokeWidth: 1.5,
+                        }}
+                        activeDot={{ r: 5 }}
+                        isAnimationActive={false}
+                      />
+                    ) : null}
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* Quiet Flagged Drop Periods Strip */}
+            <div className="px-5 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/30 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs">
+              <div className="min-w-0 text-slate-600 dark:text-slate-400">
+                {weeklyTrend.significantDropWeeks.length > 0 ? (
+                  <p className="leading-relaxed">
+                    <span className="font-medium text-slate-900 dark:text-slate-100">
+                      Flagged drop {weeklyTrend.significantDropWeeks.length === 1 ? 'period' : 'periods'}:
+                    </span>{' '}
+                    {weeklyTrend.significantDropWeeks.map((pt, idx) => (
+                      <span key={pt.weekLabel} className="font-mono tabular-nums">
+                        {idx > 0 ? ' · ' : ''}
+                        <span className="text-red-700 dark:text-red-400 font-medium">
+                          {pt.weekLabel}
+                        </span>{' '}
+                        ({pt.dateRangeLabel}, {pt.weeklyPercentage.toFixed(1)}%
+                        {pt.deltaFromPrevWeek !== null
+                          ? `, ${pt.deltaFromPrevWeek.toFixed(1)} pts`
+                          : ''}
+                        )
+                      </span>
+                    ))}
+                  </p>
+                ) : (
+                  <p>
+                    No significant weekly attendance drops detected across {weeklyTrend.points.length} tracked weeks.
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => onNavigate('attendance')}
+                className="font-medium text-blue-700 dark:text-blue-400 hover:underline whitespace-nowrap shrink-0 self-start sm:self-auto cursor-pointer"
+              >
+                Inspect in Attendance
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Attendance Trends & Prioritization Insights */}

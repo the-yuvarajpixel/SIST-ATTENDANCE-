@@ -113,6 +113,11 @@ export interface SubjectCaeMark {
   internalMax: number;
   standing: CaeStanding;
   remarks?: string;
+  classAvgCae1?: number | null;
+  classAvgCae2?: number | null;
+  classAvgBonus?: number | null;
+  classAvgInternal?: number | null;
+  classTopInternal?: number | null;
 }
 
 export interface CaeTermTrendPoint {

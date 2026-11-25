@@ -189,3 +189,266 @@ export function buildCaeTermTrend(payload: ResultsPayload): CaeTrendSummary {
     isEstimatedHistory,
   };
 }
+
+export interface SubjectCaeComparisonPoint {
+  componentKey: 'cae1' | 'cae2' | 'bonus' | 'internal';
+  label: string;
+  studentScore: number | null;
+  classAvgScore: number;
+  maxScore: number;
+  studentPct: number | null;
+  classAvgPct: number;
+  deltaPts: number | null;
+  deltaPct: number | null;
+}
+
+export interface SubjectCaeDeepDive {
+  subject: SubjectCaeMark;
+  points: SubjectCaeComparisonPoint[];
+  studentInternal: number;
+  classAvgInternal: number;
+  classTopInternal: number;
+  internalMax: number;
+  gapVsClassPts: number;
+  gapVsClassPct: number;
+  gapToTopPts: number;
+  studentMomentumPts: number | null;
+  classMomentumPts: number | null;
+  positionLabel: 'Top quartile' | 'Above average' | 'Near class avg' | 'Below average' | 'Pending';
+  positionTone: 'strong' | 'on-track' | 'needs-improvement' | 'pending';
+  strongestComponent: SubjectCaeComparisonPoint | null;
+  weakestComponent: SubjectCaeComparisonPoint | null;
+  isEstimatedClassAvg: boolean;
+}
+
+export interface AllSubjectsClassComparisonPoint {
+  courseCode: string;
+  shortName: string;
+  courseName: string;
+  studentInternal: number;
+  classAvgInternal: number;
+  studentPct: number;
+  classAvgPct: number;
+  internalMax: number;
+  deltaPts: number;
+  deltaPct: number;
+  isEstimatedClassAvg: boolean;
+}
+
+function deriveSubjectBenchmarks(subject: SubjectCaeMark): {
+  classAvgCae1: number;
+  classAvgCae2: number;
+  classAvgBonus: number;
+  classAvgInternal: number;
+  classTopInternal: number;
+  isEstimated: boolean;
+} {
+  const hasExplicit =
+    typeof subject.classAvgInternal === 'number' && Number.isFinite(subject.classAvgInternal);
+
+  if (hasExplicit) {
+    const classAvgInternal = round1(subject.classAvgInternal as number);
+    const ratio = subject.internalMax > 0 ? classAvgInternal / subject.internalMax : 0.74;
+    const classAvgCae1 =
+      typeof subject.classAvgCae1 === 'number' && Number.isFinite(subject.classAvgCae1)
+        ? round1(subject.classAvgCae1)
+        : round1(subject.cae1Max * ratio);
+    const classAvgCae2 =
+      typeof subject.classAvgCae2 === 'number' && Number.isFinite(subject.classAvgCae2)
+        ? round1(subject.classAvgCae2)
+        : round1(subject.cae2Max * ratio);
+    const classAvgBonus =
+      typeof subject.classAvgBonus === 'number' && Number.isFinite(subject.classAvgBonus)
+        ? round1(subject.classAvgBonus)
+        : round1(subject.internalBonusMax * Math.min(0.92, ratio + 0.06));
+    const classTopInternal =
+      typeof subject.classTopInternal === 'number' && Number.isFinite(subject.classTopInternal)
+        ? round1(subject.classTopInternal)
+        : round1(Math.min(subject.internalMax, Math.max(subject.internalTotal, classAvgInternal + subject.internalMax * 0.18)));
+
+    return {
+      classAvgCae1,
+      classAvgCae2,
+      classAvgBonus,
+      classAvgInternal,
+      classTopInternal,
+      isEstimated: false,
+    };
+  }
+
+  // Deterministic cohort benchmark fallback when live ERP does not expose section class averages
+  const codeHash = subject.courseCode
+    .split('')
+    .reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+  const baselineRatio = 0.72 + ((codeHash % 9) * 0.01); // 72%..80%
+  const classAvgInternal = round1(subject.internalMax * baselineRatio);
+  const classAvgCae1 = round1(subject.cae1Max * Math.max(0.65, baselineRatio - 0.01));
+  const classAvgCae2 = round1(subject.cae2Max * Math.min(0.85, baselineRatio + 0.01));
+  const classAvgBonus = round1(subject.internalBonusMax * Math.min(0.9, baselineRatio + 0.06));
+  const classTopInternal = round1(
+    Math.min(subject.internalMax, Math.max(subject.internalTotal, subject.internalMax * 0.94))
+  );
+
+  return {
+    classAvgCae1,
+    classAvgCae2,
+    classAvgBonus,
+    classAvgInternal,
+    classTopInternal,
+    isEstimated: true,
+  };
+}
+
+/**
+ * Builds a subject-level comparative breakdown of a student's CAE 1, CAE 2, Assignment/Lab,
+ * and Internal Total marks against the class average and class top benchmark.
+ */
+export function buildSubjectCaeDeepDive(subject: SubjectCaeMark): SubjectCaeDeepDive {
+  const bench = deriveSubjectBenchmarks(subject);
+  const toPct = (score: number, max: number) => (max > 0 ? round1((score / max) * 100) : 0);
+
+  const makePoint = (
+    componentKey: SubjectCaeComparisonPoint['componentKey'],
+    label: string,
+    studentScore: number | null,
+    classAvgScore: number,
+    maxScore: number
+  ): SubjectCaeComparisonPoint => {
+    const classAvgPct = toPct(classAvgScore, maxScore);
+    if (studentScore === null) {
+      return {
+        componentKey,
+        label,
+        studentScore: null,
+        classAvgScore,
+        maxScore,
+        studentPct: null,
+        classAvgPct,
+        deltaPts: null,
+        deltaPct: null,
+      };
+    }
+    const studentPct = toPct(studentScore, maxScore);
+    return {
+      componentKey,
+      label,
+      studentScore: round1(studentScore),
+      classAvgScore,
+      maxScore,
+      studentPct,
+      classAvgPct,
+      deltaPts: round1(studentScore - classAvgScore),
+      deltaPct: round1(studentPct - classAvgPct),
+    };
+  };
+
+  const points: SubjectCaeComparisonPoint[] = [
+    makePoint('cae1', 'CAE 1', subject.cae1, bench.classAvgCae1, subject.cae1Max),
+    makePoint('cae2', 'CAE 2', subject.cae2, bench.classAvgCae2, subject.cae2Max),
+    makePoint('bonus', 'Assign / Lab', subject.internalBonus, bench.classAvgBonus, subject.internalBonusMax),
+    makePoint(
+      'internal',
+      'Internal Total',
+      subject.standing === 'pending' ? null : subject.internalTotal,
+      bench.classAvgInternal,
+      subject.internalMax
+    ),
+  ];
+
+  const internalPoint = points[3];
+  const gapVsClassPts =
+    internalPoint.deltaPts !== null ? internalPoint.deltaPts : 0;
+  const gapVsClassPct =
+    internalPoint.deltaPct !== null ? internalPoint.deltaPct : 0;
+  const gapToTopPts = round1(Math.max(0, bench.classTopInternal - subject.internalTotal));
+
+  const studentMomentumPts =
+    subject.cae1 !== null && subject.cae2 !== null && subject.cae1Max === subject.cae2Max
+      ? round1(subject.cae2 - subject.cae1)
+      : null;
+  const classMomentumPts =
+    subject.cae1Max === subject.cae2Max
+      ? round1(bench.classAvgCae2 - bench.classAvgCae1)
+      : null;
+
+  let positionLabel: SubjectCaeDeepDive['positionLabel'];
+  let positionTone: SubjectCaeDeepDive['positionTone'];
+  if (subject.standing === 'pending') {
+    positionLabel = 'Pending';
+    positionTone = 'pending';
+  } else if (gapVsClassPct >= 10) {
+    positionLabel = 'Top quartile';
+    positionTone = 'strong';
+  } else if (gapVsClassPct >= 2.5) {
+    positionLabel = 'Above average';
+    positionTone = 'strong';
+  } else if (gapVsClassPct >= -2.5) {
+    positionLabel = 'Near class avg';
+    positionTone = 'on-track';
+  } else {
+    positionLabel = 'Below average';
+    positionTone = 'needs-improvement';
+  }
+
+  const scoredComponents = points
+    .slice(0, 3)
+    .filter((p) => p.deltaPct !== null);
+  let strongestComponent: SubjectCaeComparisonPoint | null = null;
+  let weakestComponent: SubjectCaeComparisonPoint | null = null;
+  for (const pt of scoredComponents) {
+    if (!strongestComponent || (pt.deltaPct as number) > (strongestComponent.deltaPct as number)) {
+      strongestComponent = pt;
+    }
+    if (!weakestComponent || (pt.deltaPct as number) < (weakestComponent.deltaPct as number)) {
+      weakestComponent = pt;
+    }
+  }
+
+  return {
+    subject,
+    points,
+    studentInternal: round1(subject.internalTotal),
+    classAvgInternal: bench.classAvgInternal,
+    classTopInternal: bench.classTopInternal,
+    internalMax: subject.internalMax,
+    gapVsClassPts,
+    gapVsClassPct,
+    gapToTopPts,
+    studentMomentumPts,
+    classMomentumPts,
+    positionLabel,
+    positionTone,
+    strongestComponent,
+    weakestComponent,
+    isEstimatedClassAvg: bench.isEstimated,
+  };
+}
+
+/**
+ * Builds a side-by-side comparison of internal marks vs class average across all current subjects.
+ */
+export function buildAllSubjectsClassComparison(
+  subjects: SubjectCaeMark[]
+): AllSubjectsClassComparisonPoint[] {
+  return subjects
+    .filter((s) => s.standing !== 'pending' && s.internalMax > 0)
+    .map((subject) => {
+      const bench = deriveSubjectBenchmarks(subject);
+      const studentPct = round1((subject.internalTotal / subject.internalMax) * 100);
+      const classAvgPct = round1((bench.classAvgInternal / subject.internalMax) * 100);
+      return {
+        courseCode: subject.courseCode,
+        shortName: subject.courseCode,
+        courseName: subject.courseName,
+        studentInternal: round1(subject.internalTotal),
+        classAvgInternal: bench.classAvgInternal,
+        studentPct,
+        classAvgPct,
+        internalMax: subject.internalMax,
+        deltaPts: round1(subject.internalTotal - bench.classAvgInternal),
+        deltaPct: round1(studentPct - classAvgPct),
+        isEstimatedClassAvg: bench.isEstimated,
+      };
+    });
+}
+

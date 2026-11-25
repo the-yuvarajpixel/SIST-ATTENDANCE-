@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { ArrowRight, TrendingDown, TrendingUp } from 'lucide-react';
 import {
   Area,
+  Bar,
+  BarChart,
   CartesianGrid,
   ComposedChart,
   Line,
@@ -11,7 +13,14 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { buildCaeTermTrend, type CaeTrendChartPoint } from '../core/cae';
+import {
+  buildAllSubjectsClassComparison,
+  buildCaeTermTrend,
+  buildSubjectCaeDeepDive,
+  type AllSubjectsClassComparisonPoint,
+  type CaeTrendChartPoint,
+  type SubjectCaeComparisonPoint,
+} from '../core/cae';
 import type { CaeStanding, NavSection, ResultsPayload, SubjectCaeMark } from '../core/types';
 import type { SectionState } from './OverviewView';
 import { SectionError, SectionSkeleton, StaleBanner } from './SectionNotice';
@@ -24,6 +33,7 @@ interface MarksViewProps {
 
 type MarksFilter = 'all' | 'strong' | 'on-track' | 'needs-improvement';
 type TrendScale = 'marks' | 'percent';
+type DeepDiveMode = 'subject' | 'all-subjects';
 
 function formatScore(value: number | null, max: number): string {
   if (value === null) return 'Pending';
@@ -179,13 +189,158 @@ function CaeTrendTooltip({ active, payload, scale }: CaeTrendTooltipProps) {
   );
 }
 
+interface SubjectDeepDiveTooltipProps {
+  active?: boolean;
+  payload?: Array<{ payload: SubjectCaeComparisonPoint }>;
+  scale: TrendScale;
+}
+
+function SubjectDeepDiveTooltip({ active, payload, scale }: SubjectDeepDiveTooltipProps) {
+  if (!active || !payload || payload.length === 0) return null;
+  const point = payload[0]?.payload;
+  if (!point) return null;
+
+  return (
+    <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3.5 py-2.5 shadow-lg text-xs space-y-1.5">
+      <div className="flex items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-1.5">
+        <span className="font-display font-semibold text-slate-900 dark:text-slate-50">
+          {point.label}
+        </span>
+        <span className="font-mono text-slate-400 dark:text-slate-500">
+          Max {point.maxScore}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-x-5 gap-y-1 font-mono tabular-nums">
+        <span className="text-slate-500 dark:text-slate-400">Your Score</span>
+        <span className="text-right font-semibold text-slate-900 dark:text-slate-50">
+          {point.studentScore !== null && point.studentPct !== null
+            ? scale === 'percent'
+              ? `${point.studentPct.toFixed(1)}% (${point.studentScore}/${point.maxScore})`
+              : `${point.studentScore} / ${point.maxScore} (${point.studentPct.toFixed(1)}%)`
+            : 'Pending'}
+        </span>
+
+        <span className="text-slate-500 dark:text-slate-400">Class Average</span>
+        <span className="text-right text-slate-700 dark:text-slate-300">
+          {scale === 'percent'
+            ? `${point.classAvgPct.toFixed(1)}% (${point.classAvgScore}/${point.maxScore})`
+            : `${point.classAvgScore} / ${point.maxScore} (${point.classAvgPct.toFixed(1)}%)`}
+        </span>
+
+        {point.deltaPts !== null && point.deltaPct !== null ? (
+          <>
+            <span className="text-slate-500 dark:text-slate-400">vs Class Avg</span>
+            <span
+              className={`text-right font-medium ${
+                point.deltaPts >= 0
+                  ? 'text-emerald-700 dark:text-emerald-400'
+                  : 'text-red-700 dark:text-red-400'
+              }`}
+            >
+              {point.deltaPts >= 0 ? '+' : ''}
+              {point.deltaPts.toFixed(1)} pts ({point.deltaPct >= 0 ? '+' : ''}
+              {point.deltaPct.toFixed(1)}%)
+            </span>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+interface AllSubjectsTooltipProps {
+  active?: boolean;
+  payload?: Array<{ payload: AllSubjectsClassComparisonPoint }>;
+  scale: TrendScale;
+}
+
+function AllSubjectsComparisonTooltip({ active, payload, scale }: AllSubjectsTooltipProps) {
+  if (!active || !payload || payload.length === 0) return null;
+  const point = payload[0]?.payload;
+  if (!point) return null;
+
+  return (
+    <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3.5 py-2.5 shadow-lg text-xs space-y-1.5 max-w-[260px]">
+      <div className="border-b border-slate-100 dark:border-slate-800 pb-1.5">
+        <p className="font-display font-semibold text-slate-900 dark:text-slate-50">
+          {point.courseName}
+        </p>
+        <p className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+          {point.courseCode}
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-x-5 gap-y-1 font-mono tabular-nums">
+        <span className="text-slate-500 dark:text-slate-400">Your Internal</span>
+        <span className="text-right font-semibold text-slate-900 dark:text-slate-50">
+          {scale === 'percent'
+            ? `${point.studentPct.toFixed(1)}%`
+            : `${point.studentInternal.toFixed(1)} / ${point.internalMax}`}
+        </span>
+
+        <span className="text-slate-500 dark:text-slate-400">Class Average</span>
+        <span className="text-right text-slate-700 dark:text-slate-300">
+          {scale === 'percent'
+            ? `${point.classAvgPct.toFixed(1)}%`
+            : `${point.classAvgInternal.toFixed(1)} / ${point.internalMax}`}
+        </span>
+
+        <span className="text-slate-500 dark:text-slate-400">Difference</span>
+        <span
+          className={`text-right font-medium ${
+            point.deltaPts >= 0
+              ? 'text-emerald-700 dark:text-emerald-400'
+              : 'text-red-700 dark:text-red-400'
+          }`}
+        >
+          {point.deltaPts >= 0 ? '+' : ''}
+          {point.deltaPts.toFixed(1)} pts ({point.deltaPct >= 0 ? '+' : ''}
+          {point.deltaPct.toFixed(1)}%)
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function MarksView({ section, onNavigate, onRetry }: MarksViewProps) {
   const [filter, setFilter] = useState<MarksFilter>('all');
   const [trendScale, setTrendScale] = useState<TrendScale>('marks');
   const [showCaeBreakdown, setShowCaeBreakdown] = useState(true);
+  const [selectedCourseCode, setSelectedCourseCode] = useState<string | null>(null);
+  const [deepDiveMode, setDeepDiveMode] = useState<DeepDiveMode>('subject');
+  const [deepDiveScale, setDeepDiveScale] = useState<TrendScale>('percent');
 
   const payload = section.envelope?.data ?? null;
   const marks = payload?.caeMarks ?? [];
+
+  const selectedSubject = useMemo(() => {
+    if (marks.length === 0) return null;
+    if (selectedCourseCode) {
+      const exact = marks.find((m) => m.courseCode === selectedCourseCode);
+      if (exact) return exact;
+    }
+    return marks.find((m) => m.standing === 'needs-improvement') ?? marks[0];
+  }, [marks, selectedCourseCode]);
+
+  const subjectDeepDive = useMemo(
+    () => (selectedSubject ? buildSubjectCaeDeepDive(selectedSubject) : null),
+    [selectedSubject]
+  );
+
+  const allSubjectsComparison = useMemo(
+    () => buildAllSubjectsClassComparison(marks),
+    [marks]
+  );
+
+  const deepDiveChartPoints = useMemo(() => {
+    if (!subjectDeepDive) return [];
+    if (deepDiveScale === 'marks') {
+      // Compare 50-mark assessments directly on a shared 0..50 axis
+      return subjectDeepDive.points.filter((pt) => pt.componentKey !== 'bonus');
+    }
+    return subjectDeepDive.points;
+  }, [subjectDeepDive, deepDiveScale]);
 
   const summary = useMemo(() => {
     const scored = marks.filter((m) => m.standing !== 'pending' && m.internalMax > 0);
@@ -664,6 +819,463 @@ export function MarksView({ section, onNavigate, onRetry }: MarksViewProps) {
             </section>
           ) : null}
 
+          {/* CAE Deep-Dive: Subject Drill-Down vs Class Averages */}
+          {subjectDeepDive ? (
+            <section
+              aria-label="CAE Deep-Dive"
+              className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden"
+            >
+              <div className="px-5 sm:px-6 py-4 sm:py-5 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                <div className="min-w-0">
+                  <h3 className="font-display text-base sm:text-lg font-semibold text-slate-900 dark:text-slate-50">
+                    CAE Deep-Dive
+                  </h3>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    <span>
+                      Drill down into subject internal performance against{' '}
+                      {subjectDeepDive.isEstimatedClassAvg
+                        ? 'estimated cohort averages'
+                        : 'class averages'}
+                    </span>
+                    <span aria-hidden="true"> · </span>
+                    <span className="font-mono tabular-nums">
+                      {allSubjectsComparison.filter((s) => s.deltaPts >= 0).length}/
+                      {allSubjectsComparison.length} subjects above avg
+                    </span>
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                  <div
+                    role="group"
+                    aria-label="CAE Deep-Dive comparison scope"
+                    className="inline-flex items-center gap-1 rounded-lg bg-slate-100 dark:bg-slate-800 p-1"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setDeepDiveMode('subject')}
+                      aria-pressed={deepDiveMode === 'subject'}
+                      className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                        deepDiveMode === 'subject'
+                          ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      Subject Breakdown
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeepDiveMode('all-subjects')}
+                      aria-pressed={deepDiveMode === 'all-subjects'}
+                      className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                        deepDiveMode === 'all-subjects'
+                          ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      All Subjects
+                    </button>
+                  </div>
+
+                  <div
+                    role="group"
+                    aria-label="CAE Deep-Dive axis scale"
+                    className="inline-flex items-center gap-1 rounded-lg bg-slate-100 dark:bg-slate-800 p-1"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setDeepDiveScale('percent')}
+                      aria-pressed={deepDiveScale === 'percent'}
+                      className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                        deepDiveScale === 'percent'
+                          ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      Percentage (%)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeepDiveScale('marks')}
+                      aria-pressed={deepDiveScale === 'marks'}
+                      className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                        deepDiveScale === 'marks'
+                          ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      Marks (/50)
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Interactive Subject Drill-Down Selector */}
+              <div
+                role="tablist"
+                aria-label="Select subject for CAE Deep-Dive"
+                className="px-5 sm:px-6 py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/30 flex flex-wrap items-center gap-2"
+              >
+                {marks.map((item) => {
+                  const active = item.courseCode === subjectDeepDive.subject.courseCode;
+                  const delta =
+                    typeof item.classAvgInternal === 'number'
+                      ? Math.round((item.internalTotal - item.classAvgInternal) * 10) / 10
+                      : null;
+
+                  return (
+                    <button
+                      key={item.courseCode}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      onClick={() => {
+                        setSelectedCourseCode(item.courseCode);
+                        if (deepDiveMode === 'all-subjects') {
+                          setDeepDiveMode('subject');
+                        }
+                      }}
+                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                        active
+                          ? 'border-blue-700 dark:border-blue-500 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 font-semibold shadow-xs'
+                          : 'border-slate-200 dark:border-slate-800 bg-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:border-slate-300 dark:hover:border-slate-700'
+                      }`}
+                    >
+                      <span className="font-mono text-[11px]">{item.courseCode}</span>
+                      <span className="max-w-[140px] truncate">{item.courseName}</span>
+                      {delta !== null ? (
+                        <span
+                          className={`font-mono text-[11px] tabular-nums ${
+                            delta >= 0
+                              ? 'text-emerald-700 dark:text-emerald-400'
+                              : 'text-red-700 dark:text-red-400'
+                          }`}
+                        >
+                          {delta >= 0 ? '+' : ''}
+                          {delta.toFixed(1)}
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="p-5 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                {/* Left: Comparative Recharts Bar Chart */}
+                <div className="lg:col-span-8 space-y-4 min-w-0">
+                  <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-2 text-xs text-slate-600 dark:text-slate-400">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span
+                          className="inline-block h-2.5 w-2.5 rounded-xs"
+                          style={{ backgroundColor: 'var(--chart-actual)' }}
+                          aria-hidden="true"
+                        />
+                        Your Marks
+                      </span>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span
+                          className="inline-block h-2.5 w-2.5 rounded-xs"
+                          style={{ backgroundColor: 'var(--chart-sgpa)' }}
+                          aria-hidden="true"
+                        />
+                        {subjectDeepDive.isEstimatedClassAvg
+                          ? 'Cohort Baseline'
+                          : 'Class Average'}
+                      </span>
+                      {deepDiveMode === 'subject' ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span
+                            className="inline-block h-0.5 w-4 border-t-2 border-dashed"
+                            style={{ borderColor: 'var(--chart-projected)' }}
+                            aria-hidden="true"
+                          />
+                          Class Top (
+                          {deepDiveScale === 'percent'
+                            ? `${((subjectDeepDive.classTopInternal / subjectDeepDive.internalMax) * 100).toFixed(0)}%`
+                            : `${subjectDeepDive.classTopInternal.toFixed(1)}/50`}
+                          )
+                        </span>
+                      ) : null}
+                    </div>
+                    <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                      {deepDiveMode === 'subject'
+                        ? `${subjectDeepDive.subject.courseCode} · ${
+                            deepDiveScale === 'percent'
+                              ? 'All 4 components (%)'
+                              : '50-mark components'
+                          }`
+                        : `${allSubjectsComparison.length} subjects · Internal vs Class Avg`}
+                    </span>
+                  </div>
+
+                  <div className="h-[260px] sm:h-[280px] w-full min-w-0">
+                    <ResponsiveContainer width="100%" height="100%">
+                      {deepDiveMode === 'subject' ? (
+                        <BarChart
+                          key="subject-breakdown"
+                          data={deepDiveChartPoints}
+                          margin={{ top: 10, right: 12, left: -8, bottom: 4 }}
+                          barGap={6}
+                          barCategoryGap="24%"
+                        >
+                          <CartesianGrid
+                            strokeDasharray="3 3"
+                            vertical={false}
+                            stroke="var(--chart-grid)"
+                          />
+                          <XAxis
+                            dataKey="label"
+                            tick={{
+                              fill: 'var(--chart-axis)',
+                              fontSize: 12,
+                              fontFamily: 'var(--font-mono)',
+                            }}
+                            tickLine={false}
+                            axisLine={{ stroke: 'var(--chart-grid)' }}
+                            dy={6}
+                          />
+                          <YAxis
+                            domain={deepDiveScale === 'percent' ? [0, 100] : [0, 50]}
+                            tick={{
+                              fill: 'var(--chart-axis)',
+                              fontSize: 12,
+                              fontFamily: 'var(--font-mono)',
+                            }}
+                            tickLine={false}
+                            axisLine={false}
+                            tickFormatter={(v: number) =>
+                              deepDiveScale === 'percent' ? `${v}%` : `${v}`
+                            }
+                          />
+                          <Tooltip content={<SubjectDeepDiveTooltip scale={deepDiveScale} />} />
+                          <ReferenceLine
+                            y={
+                              deepDiveScale === 'percent'
+                                ? Math.round(
+                                    (subjectDeepDive.classTopInternal /
+                                      subjectDeepDive.internalMax) *
+                                      100
+                                  )
+                                : subjectDeepDive.classTopInternal
+                            }
+                            stroke="var(--chart-projected)"
+                            strokeDasharray="4 4"
+                            strokeWidth={1.5}
+                          />
+                          <Bar
+                            dataKey={deepDiveScale === 'percent' ? 'studentPct' : 'studentScore'}
+                            name="Your Marks"
+                            fill="var(--chart-actual)"
+                            radius={[4, 4, 0, 0]}
+                            maxBarSize={38}
+                            isAnimationActive={false}
+                          />
+                          <Bar
+                            dataKey={
+                              deepDiveScale === 'percent' ? 'classAvgPct' : 'classAvgScore'
+                            }
+                            name="Class Average"
+                            fill="var(--chart-sgpa)"
+                            radius={[4, 4, 0, 0]}
+                            maxBarSize={38}
+                            isAnimationActive={false}
+                          />
+                        </BarChart>
+                      ) : (
+                        <BarChart
+                          key="all-subjects"
+                          data={allSubjectsComparison}
+                          margin={{ top: 10, right: 12, left: -8, bottom: 4 }}
+                          barGap={4}
+                          barCategoryGap="22%"
+                        >
+                          <CartesianGrid
+                            strokeDasharray="3 3"
+                            vertical={false}
+                            stroke="var(--chart-grid)"
+                          />
+                          <XAxis
+                            dataKey="shortName"
+                            tick={{
+                              fill: 'var(--chart-axis)',
+                              fontSize: 11,
+                              fontFamily: 'var(--font-mono)',
+                            }}
+                            tickLine={false}
+                            axisLine={{ stroke: 'var(--chart-grid)' }}
+                            dy={6}
+                          />
+                          <YAxis
+                            domain={deepDiveScale === 'percent' ? [0, 100] : [0, 50]}
+                            tick={{
+                              fill: 'var(--chart-axis)',
+                              fontSize: 12,
+                              fontFamily: 'var(--font-mono)',
+                            }}
+                            tickLine={false}
+                            axisLine={false}
+                            tickFormatter={(v: number) =>
+                              deepDiveScale === 'percent' ? `${v}%` : `${v}`
+                            }
+                          />
+                          <Tooltip
+                            content={<AllSubjectsComparisonTooltip scale={deepDiveScale} />}
+                          />
+                          <Bar
+                            dataKey={
+                              deepDiveScale === 'percent' ? 'studentPct' : 'studentInternal'
+                            }
+                            name="Your Marks"
+                            fill="var(--chart-actual)"
+                            radius={[4, 4, 0, 0]}
+                            maxBarSize={32}
+                            isAnimationActive={false}
+                          />
+                          <Bar
+                            dataKey={
+                              deepDiveScale === 'percent' ? 'classAvgPct' : 'classAvgInternal'
+                            }
+                            name="Class Average"
+                            fill="var(--chart-sgpa)"
+                            radius={[4, 4, 0, 0]}
+                            maxBarSize={32}
+                            isAnimationActive={false}
+                          />
+                        </BarChart>
+                      )}
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Right: Selected Subject Diagnostic Breakdown (hairline separated, no nested cards) */}
+                <div className="lg:col-span-4 lg:border-l lg:border-slate-200 dark:lg:border-slate-800 lg:pl-6 space-y-4">
+                  <div>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 font-mono">
+                      <span>{subjectDeepDive.subject.courseCode}</span>
+                      <span aria-hidden="true"> · </span>
+                      <span>{subjectDeepDive.subject.credits} cr</span>
+                      <span aria-hidden="true"> · </span>
+                      <span className={getStandingMeta(subjectDeepDive.positionTone).textClass}>
+                        {subjectDeepDive.positionLabel}
+                      </span>
+                    </p>
+                    <h4 className="mt-1 font-display text-base font-semibold text-slate-900 dark:text-slate-50">
+                      {subjectDeepDive.subject.courseName}
+                    </h4>
+                  </div>
+
+                  <div className="divide-y divide-slate-200 dark:divide-slate-800 border-y border-slate-200 dark:border-slate-800">
+                    <div className="py-3 flex items-baseline justify-between gap-3">
+                      <span className="text-xs text-slate-500 dark:text-slate-400">
+                        Internal vs Class Avg
+                      </span>
+                      <div className="text-right font-mono tabular-nums">
+                        <p className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+                          {subjectDeepDive.studentInternal.toFixed(1)} vs{' '}
+                          {subjectDeepDive.classAvgInternal.toFixed(1)}
+                        </p>
+                        <p
+                          className={`text-xs font-medium ${
+                            subjectDeepDive.gapVsClassPts >= 0
+                              ? 'text-emerald-700 dark:text-emerald-400'
+                              : 'text-red-700 dark:text-red-400'
+                          }`}
+                        >
+                          {subjectDeepDive.gapVsClassPts >= 0 ? '+' : ''}
+                          {subjectDeepDive.gapVsClassPts.toFixed(1)} pts (
+                          {subjectDeepDive.gapVsClassPct >= 0 ? '+' : ''}
+                          {subjectDeepDive.gapVsClassPct.toFixed(1)}%)
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="py-3 flex items-baseline justify-between gap-3">
+                      <span className="text-xs text-slate-500 dark:text-slate-400">
+                        Gap to Class Top
+                      </span>
+                      <div className="text-right font-mono tabular-nums">
+                        <p className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+                          {subjectDeepDive.gapToTopPts === 0
+                            ? 'Leading class'
+                            : `${subjectDeepDive.gapToTopPts.toFixed(1)} pts`}
+                        </p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          Class top {subjectDeepDive.classTopInternal.toFixed(1)} /{' '}
+                          {subjectDeepDive.internalMax}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="py-3 flex items-baseline justify-between gap-3">
+                      <span className="text-xs text-slate-500 dark:text-slate-400">
+                        CAE 1 → CAE 2 Shift
+                      </span>
+                      <div className="text-right font-mono tabular-nums">
+                        <p
+                          className={`text-sm font-semibold ${
+                            subjectDeepDive.studentMomentumPts === null
+                              ? 'text-slate-500 dark:text-slate-400'
+                              : subjectDeepDive.studentMomentumPts >= 0
+                                ? 'text-emerald-700 dark:text-emerald-400'
+                                : 'text-amber-700 dark:text-amber-400'
+                          }`}
+                        >
+                          {subjectDeepDive.studentMomentumPts === null
+                            ? 'Pending'
+                            : `${subjectDeepDive.studentMomentumPts >= 0 ? '+' : ''}${subjectDeepDive.studentMomentumPts.toFixed(1)} pts`}
+                        </p>
+                        {subjectDeepDive.classMomentumPts !== null ? (
+                          <p className="text-xs text-slate-500 dark:text-slate-400">
+                            Class avg {subjectDeepDive.classMomentumPts >= 0 ? '+' : ''}
+                            {subjectDeepDive.classMomentumPts.toFixed(1)} pts
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                    {subjectDeepDive.strongestComponent &&
+                    subjectDeepDive.weakestComponent &&
+                    subjectDeepDive.strongestComponent.componentKey !==
+                      subjectDeepDive.weakestComponent.componentKey ? (
+                      <p>
+                        Strongest vs class:{' '}
+                        <span className="font-medium text-slate-900 dark:text-slate-100">
+                          {subjectDeepDive.strongestComponent.label}
+                        </span>{' '}
+                        (
+                        <span className="font-mono tabular-nums">
+                          {(subjectDeepDive.strongestComponent.deltaPct ?? 0) >= 0 ? '+' : ''}
+                          {(subjectDeepDive.strongestComponent.deltaPct ?? 0).toFixed(1)}%
+                        </span>
+                        ). Focus area:{' '}
+                        <span className="font-medium text-slate-900 dark:text-slate-100">
+                          {subjectDeepDive.weakestComponent.label}
+                        </span>{' '}
+                        (
+                        <span className="font-mono tabular-nums">
+                          {(subjectDeepDive.weakestComponent.deltaPct ?? 0) >= 0 ? '+' : ''}
+                          {(subjectDeepDive.weakestComponent.deltaPct ?? 0).toFixed(1)}%
+                        </span>
+                        ).
+                      </p>
+                    ) : null}
+                    {subjectDeepDive.subject.remarks ? (
+                      <p className="text-slate-500 dark:text-slate-400">
+                        {subjectDeepDive.subject.remarks}
+                      </p>
+                    ) : null}
+                    <p className="font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                      ESE goal: {computeEseTargets(subjectDeepDive.subject).primary}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </section>
+          ) : null}
+
           {/* Subject-by-subject CAE table */}
           {filteredMarks.length === 0 ? (
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 text-center">
@@ -708,10 +1320,21 @@ export function MarksView({ section, onNavigate, onRetry }: MarksViewProps) {
                           ? Math.round((item.cae2 - item.cae1) * 10) / 10
                           : null;
 
+                      const isDeepDiveSelected =
+                        subjectDeepDive?.subject.courseCode === item.courseCode;
+
                       return (
                         <tr
                           key={item.courseCode}
-                          className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors"
+                          onClick={() => {
+                            setSelectedCourseCode(item.courseCode);
+                            setDeepDiveMode('subject');
+                          }}
+                          className={`transition-colors cursor-pointer ${
+                            isDeepDiveSelected
+                              ? 'bg-blue-50/60 dark:bg-blue-950/25'
+                              : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/40'
+                          }`}
                         >
                           <td className="py-4 pl-5 pr-4 min-w-[230px]">
                             <p className="font-medium text-slate-900 dark:text-slate-100">
@@ -721,10 +1344,12 @@ export function MarksView({ section, onNavigate, onRetry }: MarksViewProps) {
                               <span className="font-mono">{item.courseCode}</span>
                               <span aria-hidden="true"> · </span>
                               <span className="font-mono tabular-nums">{item.credits} cr</span>
-                              {item.remarks ? (
+                              {typeof item.classAvgInternal === 'number' ? (
                                 <>
                                   <span aria-hidden="true"> · </span>
-                                  <span>{item.remarks}</span>
+                                  <span className="font-mono tabular-nums">
+                                    Class avg {item.classAvgInternal.toFixed(1)}/{item.internalMax}
+                                  </span>
                                 </>
                               ) : null}
                             </p>

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   analyzeAttendanceInsights,
+  buildWeeklyAttendanceTrend,
   clampAttendanceDateToToday,
   computeAttendanceStats,
   computeOverallAttendance,
@@ -17,7 +18,11 @@ import {
   evaluateCgpaThreshold,
   planTargetCgpa,
 } from './gpa';
-import { buildCaeTermTrend } from './cae';
+import {
+  buildAllSubjectsClassComparison,
+  buildCaeTermTrend,
+  buildSubjectCaeDeepDive,
+} from './cae';
 import { deduplicateDeadlines, findNextClass, getUpcomingErpExams } from './schedule';
 import { TwoTierCache } from './cache';
 import { SchemaValidationError, validateAttendance, validateDeadlines } from './schemas';
@@ -473,4 +478,100 @@ test('getUpcomingErpExams filters ERP exam deadlines, excludes past/completed, a
   assert.equal(upcoming[2].urgency, 'upcoming');
   assert.equal(upcoming[2].countdownLabel, '8 days left');
 });
+
+test('buildWeeklyAttendanceTrend conserves totals, aligns cumulative final %, and flags drop weeks', () => {
+  const subjects: AttendanceSubject[] = [
+    { courseCode: 'SCSA1601', courseName: 'Computer Networks', faculty: 'Dr. Priya', credits: 4, attended: 35, total: 40, lastUpdated: '2026-11-25' },
+    { courseCode: 'SCSA1602', courseName: 'Compiler Design', faculty: 'Prof. Karthik', credits: 4, attended: 25, total: 36, lastUpdated: '2026-11-25' },
+    { courseCode: 'SCSA1605', courseName: 'Software Engineering', faculty: 'Prof. Deepika', credits: 3, attended: 21, total: 29, lastUpdated: '2026-11-25' },
+  ];
+  const timetable: TimetableSlot[] = [
+    { id: '1', day: 'Mon', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1601', courseName: 'Computer Networks', room: 'CS-204', faculty: 'Dr. Priya', kind: 'Lecture' },
+    { id: '2', day: 'Tue', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1602', courseName: 'Compiler Design', room: 'CS-204', faculty: 'Prof. Karthik', kind: 'Lecture' },
+    { id: '3', day: 'Wed', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1605', courseName: 'Software Engineering', room: 'CS-204', faculty: 'Prof. Deepika', kind: 'Lecture' },
+  ];
+  const fixedNow = new Date(2026, 10, 25, 12, 0, 0);
+
+  const trend = buildWeeklyAttendanceTrend(subjects, timetable, 75, 'all', fixedNow);
+  assert.ok(trend.points.length >= 6);
+
+  // Exact sum conservation across all weeks
+  const sumAttended = trend.points.reduce((acc, p) => acc + p.attendedInWeek, 0);
+  const sumHeld = trend.points.reduce((acc, p) => acc + p.heldInWeek, 0);
+  assert.equal(sumAttended, 81);
+  assert.equal(sumHeld, 105);
+  assert.equal(trend.currentCumulativePercent, Math.round((81 / 105) * 1000) / 10);
+  assert.ok(trend.significantDropWeeks.length >= 1);
+  assert.ok(trend.biggestDropWeek !== null);
+
+  // Single-course scoping
+  const cdTrend = buildWeeklyAttendanceTrend(subjects, timetable, 75, 'SCSA1602', fixedNow);
+  assert.equal(cdTrend.points.reduce((acc, p) => acc + p.attendedInWeek, 0), 25);
+  assert.equal(cdTrend.points.reduce((acc, p) => acc + p.heldInWeek, 0), 36);
+  assert.equal(cdTrend.currentCumulativePercent, 69.4);
+
+  // Empty subjects handled safely
+  const emptyTrend = buildWeeklyAttendanceTrend([], [], 75, 'all', fixedNow);
+  assert.equal(emptyTrend.points.length, 0);
+  assert.equal(emptyTrend.biggestDropWeek, null);
+});
+
+test('CAE Deep-Dive computes subject comparisons against class averages and handles missing benchmarks', () => {
+  const deepDive = buildSubjectCaeDeepDive({
+    courseCode: 'SCSA1602',
+    courseName: 'Compiler Design',
+    credits: 4,
+    cae1: 29,
+    cae1Max: 50,
+    cae2: 31,
+    cae2Max: 50,
+    internalBonus: 7,
+    internalBonusMax: 10,
+    internalTotal: 31.0,
+    internalMax: 50,
+    standing: 'needs-improvement',
+    classAvgCae1: 35.4,
+    classAvgCae2: 36.2,
+    classAvgBonus: 7.8,
+    classAvgInternal: 36.4,
+    classTopInternal: 46.5,
+  });
+
+  assert.equal(deepDive.isEstimatedClassAvg, false);
+  assert.equal(deepDive.points.length, 4);
+  assert.equal(deepDive.gapVsClassPts, -5.4);
+  assert.equal(deepDive.gapToTopPts, 15.5);
+  assert.equal(deepDive.studentMomentumPts, 2);
+  assert.equal(deepDive.classMomentumPts, 0.8);
+  assert.equal(deepDive.positionLabel, 'Below average');
+  assert.equal(deepDive.weakestComponent?.componentKey, 'cae1');
+
+  // Fallback cohort baseline when live ERP omits class averages
+  const estimated = buildSubjectCaeDeepDive({
+    courseCode: 'SCSA1603',
+    courseName: 'Machine Learning',
+    credits: 4,
+    cae1: 47,
+    cae1Max: 50,
+    cae2: 48,
+    cae2Max: 50,
+    internalBonus: 10,
+    internalBonusMax: 10,
+    internalTotal: 48.0,
+    internalMax: 50,
+    standing: 'strong',
+  });
+  assert.equal(estimated.isEstimatedClassAvg, true);
+  assert.ok(estimated.gapVsClassPts > 0);
+  assert.equal(estimated.positionLabel, 'Top quartile');
+
+  const allComp = buildAllSubjectsClassComparison([
+    deepDive.subject,
+    estimated.subject,
+  ]);
+  assert.equal(allComp.length, 2);
+  assert.equal(allComp[0].deltaPts, -5.4);
+  assert.ok(allComp[1].deltaPts > 0);
+});
+
 
