@@ -144,6 +144,31 @@ export interface SimulatedFutureSemester {
   semester: number;
   expectedSgpa: number;
   credits: number;
+  courses?: PlannedCourse[];
+}
+
+export function resolveFutureSemesterStats(fut: SimulatedFutureSemester): {
+  sgpa: number;
+  credits: number;
+  usingCourses: boolean;
+} {
+  if (fut.courses && fut.courses.length > 0) {
+    const computed = computeSemesterGpa(
+      fut.courses.map((c) => ({ credits: c.credits, grade: c.expectedGrade }))
+    );
+    if (computed.credits > 0) {
+      return {
+        sgpa: computed.sgpa,
+        credits: computed.credits,
+        usingCourses: true,
+      };
+    }
+  }
+  return {
+    sgpa: Math.min(10, Math.max(0, round2(fut.expectedSgpa))),
+    credits: Math.max(0, Math.round(fut.credits)),
+    usingCourses: false,
+  };
 }
 
 export interface CgpaTrajectoryPoint {
@@ -245,21 +270,20 @@ export function buildCgpaTrajectory(
 
   const sortedFuture = [...futureSemesters].sort((a, b) => a.semester - b.semester);
   for (const fut of sortedFuture) {
-    const safeCredits = Math.max(0, Math.round(fut.credits));
-    const clampedSgpa = Math.min(10, Math.max(0, fut.expectedSgpa));
-    if (safeCredits <= 0) continue;
+    const resolved = resolveFutureSemesterStats(fut);
+    if (resolved.credits <= 0) continue;
 
-    cumulativeWeighted += clampedSgpa * safeCredits;
-    cumulativeCredits += safeCredits;
+    cumulativeWeighted += resolved.sgpa * resolved.credits;
+    cumulativeCredits += resolved.credits;
     const cgpa = round2(cumulativeWeighted / cumulativeCredits);
 
     points.push({
       semester: fut.semester,
-      label: `Sem ${fut.semester} (Sim)`,
+      label: resolved.usingCourses ? `Sem ${fut.semester} (Grades)` : `Sem ${fut.semester} (Sim)`,
       shortLabel: `S${fut.semester}*`,
       kind: 'simulated',
-      sgpa: round2(clampedSgpa),
-      credits: safeCredits,
+      sgpa: round2(resolved.sgpa),
+      credits: resolved.credits,
       cumulativeCredits,
       cgpa,
       completedCgpa: null,

@@ -16,6 +16,7 @@ import {
   evaluateCgpaThreshold,
   planTargetCgpa,
 } from './gpa';
+import { buildCaeTermTrend } from './cae';
 import { deduplicateDeadlines, findNextClass } from './schedule';
 import { TwoTierCache } from './cache';
 import { SchemaValidationError, validateAttendance, validateDeadlines } from './schemas';
@@ -230,6 +231,80 @@ test('CGPA trajectory bridges historical semesters with planned and future simul
   // Holding Sem 3 planned (9.00 CGPA over 60 cr) fixed: need (9.4*100 - 9.0*60) / 40 = 400 / 40 = 10.00
   assert.equal(warnEval.requiredSimulatedSgpa, 10);
   assert.equal(warnEval.simulatedAchievable, true);
+
+  // Course-level expected grades in future semesters drive exact SGPA and potential final CGPA
+  const courseDrivenTraj = buildCgpaTrajectory(semesters, 3, planned, [
+    {
+      semester: 4,
+      expectedSgpa: 7.0, // ignored when courses are provided
+      credits: 10,
+      courses: [
+        { courseCode: 'CS401', courseName: 'Distributed Systems', credits: 10, expectedGrade: 'O' },
+        { courseCode: 'CS402', courseName: 'ML', credits: 10, expectedGrade: 'A' },
+      ],
+    },
+  ]);
+  // Sem 4 courses SGPA = (10*10 + 10*8)/20 = 9.00 over 20 cr -> cumulative = (540 + 180)/80 = 9.00
+  assert.equal(courseDrivenTraj.points[3].sgpa, 9.0);
+  assert.equal(courseDrivenTraj.points[3].credits, 20);
+  assert.equal(courseDrivenTraj.finalCgpa, 9.0);
+  assert.equal(courseDrivenTraj.points[3].label, 'Sem 4 (Grades)');
+});
+
+test('CAE multi-term trend computes progression across historical terms and current CAE marks', () => {
+  const trend = buildCaeTermTrend({
+    currentSemester: 3,
+    semesters: [
+      { semester: 1, termLabel: 'Nov 2024', sgpa: 8.2, credits: 20, courses: [] },
+      { semester: 2, termLabel: 'May 2025', sgpa: 8.7, credits: 20, courses: [] },
+    ],
+    currentCourses: [],
+    caeHistory: [
+      { semester: 1, termLabel: 'Nov 2024', cae1Avg: 34, cae2Avg: 36, internalAvg: 35.5, internalMax: 50, subjectCount: 5 },
+      { semester: 2, termLabel: 'May 2025', cae1Avg: 38, cae2Avg: 40, internalAvg: 39.2, internalMax: 50, subjectCount: 5 },
+    ],
+    caeMarks: [
+      {
+        courseCode: 'CS301',
+        courseName: 'Networks',
+        credits: 4,
+        cae1: 42,
+        cae1Max: 50,
+        cae2: 46,
+        cae2Max: 50,
+        internalBonus: 9,
+        internalBonusMax: 10,
+        internalTotal: 44.2,
+        internalMax: 50,
+        standing: 'strong',
+      },
+      {
+        courseCode: 'CS302',
+        courseName: 'Algorithms',
+        credits: 4,
+        cae1: 40,
+        cae1Max: 50,
+        cae2: 42,
+        cae2Max: 50,
+        internalBonus: 8,
+        internalBonusMax: 10,
+        internalTotal: 40.8,
+        internalMax: 50,
+        standing: 'strong',
+      },
+    ],
+  });
+
+  assert.equal(trend.points.length, 3);
+  assert.equal(trend.isEstimatedHistory, false);
+  assert.equal(trend.points[2].semester, 3);
+  assert.equal(trend.points[2].isCurrent, true);
+  assert.equal(trend.points[2].internalAvg, 42.5);
+  assert.equal(trend.points[2].cae1Avg, 41);
+  assert.equal(trend.points[2].cae2Avg, 44);
+  assert.equal(trend.overallDeltaPts, 7);
+  assert.equal(trend.direction, 'improving');
+  assert.equal(trend.bestTerm?.semester, 3);
 });
 
 test('next-class resolver selects upcoming slot and wraps weekends to Monday', () => {

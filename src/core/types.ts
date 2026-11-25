@@ -113,11 +113,23 @@ export interface SubjectCaeMark {
   remarks?: string;
 }
 
+export interface CaeTermTrendPoint {
+  semester: number;
+  termLabel: string;
+  cae1Avg: number;
+  cae2Avg: number | null;
+  internalAvg: number;
+  internalMax: number;
+  subjectCount: number;
+  isCurrent?: boolean;
+}
+
 export interface ResultsPayload {
   semesters: SemesterResult[];
   currentSemester: number;
   currentCourses: PlannedCourse[];
   caeMarks?: SubjectCaeMark[];
+  caeHistory?: CaeTermTrendPoint[];
 }
 
 export type DeadlineKind = 'assignment' | 'exam' | 'fee';

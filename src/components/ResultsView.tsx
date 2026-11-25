@@ -23,10 +23,12 @@ import {
   buildCgpaTrajectory,
   computeCgpaSummary,
   computeProjectedCgpa,
+  computeSemesterGpa,
   evaluateCgpaThreshold,
   GRADE_POINTS,
   ORDERED_GRADES,
   planTargetCgpa,
+  resolveFutureSemesterStats,
   type CgpaTrajectoryPoint,
   type SimulatedFutureSemester,
 } from '../core/gpa';
@@ -57,14 +59,42 @@ function readInitialWarningThreshold(): number {
   return 8.5;
 }
 
+function buildDefaultCoursesForFutureSemester(semester: number): PlannedCourse[] {
+  if (semester === 7) {
+    return [
+      { courseCode: 'SCSA1701', courseName: 'Distributed Cloud Systems', credits: 4, expectedGrade: 'A+' },
+      { courseCode: 'SCSA1702', courseName: 'Deep Learning & Neural Nets', credits: 4, expectedGrade: 'O' },
+      { courseCode: 'SCSA1703', courseName: 'Cryptography & Network Security', credits: 4, expectedGrade: 'A+' },
+      { courseCode: 'SCSA1704', courseName: 'Professional Elective III', credits: 4, expectedGrade: 'A+' },
+      { courseCode: 'SCSA3701', courseName: 'Major Project — Phase I', credits: 4, expectedGrade: 'O' },
+    ];
+  }
+  if (semester === 8) {
+    return [
+      { courseCode: 'SCSA1801', courseName: 'Enterprise DevOps & SRE', credits: 3, expectedGrade: 'A+' },
+      { courseCode: 'SCSA1802', courseName: 'Open Elective', credits: 3, expectedGrade: 'A+' },
+      { courseCode: 'SCSA3801', courseName: 'Major Project — Phase II & Viva', credits: 10, expectedGrade: 'O' },
+    ];
+  }
+  return [
+    { courseCode: `SEM${semester}-C1`, courseName: `Core Course I (Sem ${semester})`, credits: 4, expectedGrade: 'A+' },
+    { courseCode: `SEM${semester}-C2`, courseName: `Core Course II (Sem ${semester})`, credits: 4, expectedGrade: 'A+' },
+    { courseCode: `SEM${semester}-C3`, courseName: `Professional Elective (Sem ${semester})`, credits: 4, expectedGrade: 'O' },
+    { courseCode: `SEM${semester}-C4`, courseName: `Open Elective / Lab (Sem ${semester})`, credits: 4, expectedGrade: 'A+' },
+  ];
+}
+
 function buildDefaultFutureSemesters(currentSemester: number): SimulatedFutureSemester[] {
   const defaults: SimulatedFutureSemester[] = [];
   const targetGradSem = Math.max(currentSemester + 2, 8);
   for (let sem = currentSemester + 1; sem <= targetGradSem; sem += 1) {
+    const courses = buildDefaultCoursesForFutureSemester(sem);
+    const computed = computeSemesterGpa(courses.map((c) => ({ credits: c.credits, grade: c.expectedGrade })));
     defaults.push({
       semester: sem,
-      expectedSgpa: sem === targetGradSem ? 9.2 : 9.0,
-      credits: sem === targetGradSem ? 16 : 20,
+      expectedSgpa: computed.sgpa,
+      credits: computed.credits,
+      courses,
     });
   }
   return defaults;
@@ -157,6 +187,7 @@ export function ResultsView({ section, onNavigate, onRetry }: ResultsViewProps) 
   const [warningThreshold, setWarningThreshold] = useState<number>(readInitialWarningThreshold);
   const [plannedCourses, setPlannedCourses] = useState<PlannedCourse[]>([]);
   const [futureSemesters, setFutureSemesters] = useState<SimulatedFutureSemester[]>([]);
+  const [activePlannerSem, setActivePlannerSem] = useState<number | null>(null);
   const [showSgpaSeries, setShowSgpaSeries] = useState(true);
   const [expandedSem, setExpandedSem] = useState<number | null>(5);
 
@@ -171,7 +202,9 @@ export function ResultsView({ section, onNavigate, onRetry }: ResultsViewProps) 
   useEffect(() => {
     if (!payload) return;
     setPlannedCourses(payload.currentCourses);
-    setFutureSemesters(buildDefaultFutureSemesters(payload.currentSemester));
+    const nextFutures = buildDefaultFutureSemesters(payload.currentSemester);
+    setFutureSemesters(nextFutures);
+    setActivePlannerSem(nextFutures[0]?.semester ?? payload.currentSemester);
     if (payload.semesters.length > 0) {
       setExpandedSem(payload.semesters[payload.semesters.length - 1].semester);
     }
@@ -232,6 +265,22 @@ export function ResultsView({ section, onNavigate, onRetry }: ResultsViewProps) 
     return map;
   }, [trajectory]);
 
+  const effectivePlannerSem = useMemo(() => {
+    if (!payload) return 6;
+    if (
+      activePlannerSem === payload.currentSemester ||
+      futureSemesters.some((f) => f.semester === activePlannerSem)
+    ) {
+      return activePlannerSem as number;
+    }
+    return futureSemesters[0]?.semester ?? payload.currentSemester;
+  }, [activePlannerSem, futureSemesters, payload]);
+
+  const activeFutureSem = useMemo(
+    () => futureSemesters.find((f) => f.semester === effectivePlannerSem) ?? null,
+    [futureSemesters, effectivePlannerSem]
+  );
+
   function updatePlannedGrade(courseCode: string, expectedGrade: GradeLetter) {
     setPlannedCourses((prev) =>
       prev.map((c) => (c.courseCode === courseCode ? { ...c, expectedGrade } : c))
@@ -243,8 +292,138 @@ export function ResultsView({ section, onNavigate, onRetry }: ResultsViewProps) 
     patch: Partial<Pick<SimulatedFutureSemester, 'expectedSgpa' | 'credits'>>
   ) {
     setFutureSemesters((prev) =>
-      prev.map((item) => (item.semester === semester ? { ...item, ...patch } : item))
+      prev.map((item) =>
+        item.semester === semester
+          ? { ...item, ...patch, courses: undefined }
+          : item
+      )
     );
+  }
+
+  function updateFutureCourse(
+    semester: number,
+    courseCode: string,
+    patch: Partial<Pick<PlannedCourse, 'courseName' | 'credits' | 'expectedGrade'>>
+  ) {
+    setFutureSemesters((prev) =>
+      prev.map((item) => {
+        if (item.semester !== semester) return item;
+        const baseCourses =
+          item.courses && item.courses.length > 0
+            ? item.courses
+            : buildDefaultCoursesForFutureSemester(semester);
+        const nextCourses = baseCourses.map((c) =>
+          c.courseCode === courseCode ? { ...c, ...patch } : c
+        );
+        const computed = computeSemesterGpa(
+          nextCourses.map((c) => ({ credits: c.credits, grade: c.expectedGrade }))
+        );
+        return {
+          ...item,
+          courses: nextCourses,
+          expectedSgpa: computed.sgpa,
+          credits: computed.credits,
+        };
+      })
+    );
+  }
+
+  function addCourseToFutureSemester(semester: number) {
+    setFutureSemesters((prev) =>
+      prev.map((item) => {
+        if (item.semester !== semester) return item;
+        const baseCourses =
+          item.courses && item.courses.length > 0
+            ? item.courses
+            : buildDefaultCoursesForFutureSemester(semester);
+        if (baseCourses.length >= 10) return item;
+        const nextIdx = baseCourses.length + 1;
+        const nextCourses: PlannedCourse[] = [
+          ...baseCourses,
+          {
+            courseCode: `SEM${semester}-C${nextIdx}-${Date.now().toString(36).slice(-3).toUpperCase()}`,
+            courseName: `Elective Course ${nextIdx}`,
+            credits: 3,
+            expectedGrade: 'A+',
+          },
+        ];
+        const computed = computeSemesterGpa(
+          nextCourses.map((c) => ({ credits: c.credits, grade: c.expectedGrade }))
+        );
+        return {
+          ...item,
+          courses: nextCourses,
+          expectedSgpa: computed.sgpa,
+          credits: computed.credits,
+        };
+      })
+    );
+  }
+
+  function removeCourseFromFutureSemester(semester: number, courseCode: string) {
+    setFutureSemesters((prev) =>
+      prev.map((item) => {
+        if (item.semester !== semester) return item;
+        const baseCourses = item.courses ?? [];
+        if (baseCourses.length <= 1) return item;
+        const nextCourses = baseCourses.filter((c) => c.courseCode !== courseCode);
+        const computed = computeSemesterGpa(
+          nextCourses.map((c) => ({ credits: c.credits, grade: c.expectedGrade }))
+        );
+        return {
+          ...item,
+          courses: nextCourses,
+          expectedSgpa: computed.sgpa,
+          credits: computed.credits,
+        };
+      })
+    );
+  }
+
+  function applyGradeToActiveSemester(grade: GradeLetter) {
+    if (!payload) return;
+    if (effectivePlannerSem === payload.currentSemester) {
+      setPlannedCourses((prev) => prev.map((c) => ({ ...c, expectedGrade: grade })));
+      return;
+    }
+    setFutureSemesters((prev) =>
+      prev.map((item) => {
+        if (item.semester !== effectivePlannerSem) return item;
+        const baseCourses =
+          item.courses && item.courses.length > 0
+            ? item.courses
+            : buildDefaultCoursesForFutureSemester(item.semester);
+        const nextCourses = baseCourses.map((c) => ({ ...c, expectedGrade: grade }));
+        const computed = computeSemesterGpa(
+          nextCourses.map((c) => ({ credits: c.credits, grade: c.expectedGrade }))
+        );
+        return {
+          ...item,
+          courses: nextCourses,
+          expectedSgpa: computed.sgpa,
+          credits: computed.credits,
+        };
+      })
+    );
+  }
+
+  function restoreCoursePlanForFutureSemester(semester: number) {
+    setFutureSemesters((prev) =>
+      prev.map((item) => {
+        if (item.semester !== semester) return item;
+        const courses = buildDefaultCoursesForFutureSemester(semester);
+        const computed = computeSemesterGpa(
+          courses.map((c) => ({ credits: c.credits, grade: c.expectedGrade }))
+        );
+        return {
+          ...item,
+          courses,
+          expectedSgpa: computed.sgpa,
+          credits: computed.credits,
+        };
+      })
+    );
+    setActivePlannerSem(semester);
   }
 
   function addFutureSemester() {
@@ -253,29 +432,46 @@ export function ResultsView({ section, onNavigate, onRetry }: ResultsViewProps) 
       if (prev.length >= 6) return prev;
       const lastSem =
         prev.length > 0 ? prev[prev.length - 1].semester : payload.currentSemester;
-      const lastSgpa = prev.length > 0 ? prev[prev.length - 1].expectedSgpa : 9.0;
+      const nextSem = lastSem + 1;
+      const courses = buildDefaultCoursesForFutureSemester(nextSem);
+      const computed = computeSemesterGpa(
+        courses.map((c) => ({ credits: c.credits, grade: c.expectedGrade }))
+      );
+      setActivePlannerSem(nextSem);
       return [
         ...prev,
         {
-          semester: lastSem + 1,
-          expectedSgpa: lastSgpa,
-          credits: 20,
+          semester: nextSem,
+          expectedSgpa: computed.sgpa,
+          credits: computed.credits,
+          courses,
         },
       ];
     });
   }
 
   function removeFutureSemester(semester: number) {
-    setFutureSemesters((prev) => prev.filter((s) => s.semester !== semester));
+    setFutureSemesters((prev) => {
+      const next = prev.filter((s) => s.semester !== semester);
+      if (activePlannerSem === semester && payload) {
+        setActivePlannerSem(next[0]?.semester ?? payload.currentSemester);
+      }
+      return next;
+    });
   }
 
   function applyFuturePreset(sgpa: number) {
-    setFutureSemesters((prev) => prev.map((s) => ({ ...s, expectedSgpa: sgpa })));
+    setFutureSemesters((prev) =>
+      prev.map((s) => ({ ...s, expectedSgpa: sgpa, courses: undefined }))
+    );
   }
 
   function resetFutureSimulation() {
     if (!payload) return;
-    setFutureSemesters(buildDefaultFutureSemesters(payload.currentSemester));
+    const defaults = buildDefaultFutureSemesters(payload.currentSemester);
+    setFutureSemesters(defaults);
+    setPlannedCourses(payload.currentCourses);
+    setActivePlannerSem(defaults[0]?.semester ?? payload.currentSemester);
   }
 
   function applyRecoverySgpa() {
@@ -292,7 +488,7 @@ export function ResultsView({ section, onNavigate, onRetry }: ResultsViewProps) 
       Math.ceil(thresholdEval.requiredSimulatedSgpa * 20) / 20
     );
     setFutureSemesters((prev) =>
-      prev.map((s) => ({ ...s, expectedSgpa: targetSgpaStep }))
+      prev.map((s) => ({ ...s, expectedSgpa: targetSgpaStep, courses: undefined }))
     );
   }
 
@@ -746,6 +942,7 @@ export function ResultsView({ section, onNavigate, onRetry }: ResultsViewProps) 
                   ) : (
                     <div className="divide-y divide-slate-200 dark:divide-slate-800 flex-1">
                       {futureSemesters.map((fut) => {
+                        const resolved = resolveFutureSemesterStats(fut);
                         const pt = trajectoryBySemester.get(fut.semester);
                         const prevPt = trajectoryBySemester.get(fut.semester - 1);
                         const stepDelta =
@@ -755,40 +952,57 @@ export function ResultsView({ section, onNavigate, onRetry }: ResultsViewProps) 
                         return (
                           <div key={fut.semester} className="px-5 py-3.5 space-y-2.5">
                             <div className="flex items-center justify-between gap-2">
-                              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
-                                <span className="text-sm font-semibold text-slate-900 dark:text-slate-100 whitespace-nowrap">
-                                  Semester {fut.semester}
-                                </span>
-                                {pt ? (
-                                  <span
-                                    className={`font-mono text-xs tabular-nums whitespace-nowrap ${
-                                      rowBreached
-                                        ? 'text-red-700 dark:text-red-400 font-medium'
-                                        : 'text-teal-700 dark:text-teal-400'
-                                    }`}
-                                  >
-                                    → {pt.cgpa.toFixed(2)} CGPA
-                                    {stepDelta !== null
-                                      ? ` (${stepDelta >= 0 ? '+' : ''}${stepDelta.toFixed(2)})`
-                                      : ''}
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                  <span className="text-sm font-semibold text-slate-900 dark:text-slate-100 whitespace-nowrap">
+                                    Semester {fut.semester}
                                   </span>
-                                ) : null}
-                                {rowBreached ? (
-                                  <span className="inline-flex items-center gap-1 text-xs font-medium text-red-700 dark:text-red-400 whitespace-nowrap">
-                                    <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
-                                    Below {warningThreshold.toFixed(2)}
-                                  </span>
+                                  {pt ? (
+                                    <span
+                                      className={`font-mono text-xs tabular-nums whitespace-nowrap ${
+                                        rowBreached
+                                          ? 'text-red-700 dark:text-red-400 font-medium'
+                                          : 'text-teal-700 dark:text-teal-400'
+                                      }`}
+                                    >
+                                      → {pt.cgpa.toFixed(2)} CGPA
+                                      {stepDelta !== null
+                                        ? ` (${stepDelta >= 0 ? '+' : ''}${stepDelta.toFixed(2)})`
+                                        : ''}
+                                    </span>
+                                  ) : null}
+                                  {rowBreached ? (
+                                    <span className="inline-flex items-center gap-1 text-xs font-medium text-red-700 dark:text-red-400 whitespace-nowrap">
+                                      <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                      Below {warningThreshold.toFixed(2)}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                {resolved.usingCourses && fut.courses ? (
+                                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                                    {fut.courses.length} graded{' '}
+                                    {fut.courses.length === 1 ? 'course' : 'courses'}
+                                  </p>
                                 ) : null}
                               </div>
 
-                              <button
-                                type="button"
-                                onClick={() => removeFutureSemester(fut.semester)}
-                                aria-label={`Remove simulated Semester ${fut.semester}`}
-                                className="rounded-md p-1.5 text-slate-400 hover:text-red-700 dark:hover:text-red-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                              </button>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => setActivePlannerSem(fut.semester)}
+                                  className="rounded-md px-2 py-1 text-xs font-medium text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition-colors whitespace-nowrap cursor-pointer"
+                                >
+                                  Edit grades
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => removeFutureSemester(fut.semester)}
+                                  aria-label={`Remove simulated Semester ${fut.semester}`}
+                                  className="rounded-md p-1.5 text-slate-400 hover:text-red-700 dark:hover:text-red-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                                </button>
+                              </div>
                             </div>
 
                             <div className="flex items-center gap-3">
@@ -931,59 +1145,300 @@ export function ResultsView({ section, onNavigate, onRetry }: ResultsViewProps) 
               ) : null}
             </section>
 
-            {/* Semester VI Grade Planner */}
-            <section className="xl:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
-              <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
-                    Semester {payload.currentSemester} Grade Planner
-                  </h2>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                    Pick expected grades per course to simulate your upcoming SGPA and CGPA.
-                  </p>
+            {/* Interactive Multi-Semester Future Grade Planner */}
+            <section
+              aria-label="Interactive future semester CGPA grade planner"
+              className="xl:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden"
+            >
+              <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
+                      Interactive Future Semester Grade Planner
+                    </h2>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                      Enter expected grades across current and future semesters to calculate your potential final CGPA.
+                    </p>
+                  </div>
+                  {trajectory ? (
+                    <div className="text-right font-mono tabular-nums shrink-0">
+                      <p className="text-xs font-semibold text-teal-700 dark:text-teal-400">
+                        Potential Final CGPA {trajectory.finalCgpa.toFixed(2)}
+                      </p>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {trajectory.deltaFromBaseline >= 0 ? '+' : ''}
+                        {trajectory.deltaFromBaseline.toFixed(2)} vs current · {trajectory.finalCredits} cr
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
-                {projection ? (
-                  <span className="font-mono text-xs font-semibold tabular-nums text-blue-700 dark:text-blue-400">
-                    Planned SGPA {projection.plannedSgpa.toFixed(2)}
-                  </span>
-                ) : null}
+
+                {/* Semester Tabs */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div
+                    role="tablist"
+                    aria-label="Select semester to plan expected grades"
+                    className="inline-flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 dark:bg-slate-800 p-1"
+                  >
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={effectivePlannerSem === payload.currentSemester}
+                      onClick={() => setActivePlannerSem(payload.currentSemester)}
+                      className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                        effectivePlannerSem === payload.currentSemester
+                          ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      Sem {payload.currentSemester} (Current)
+                      {projection ? (
+                        <span className="ml-1.5 font-mono text-[11px] opacity-75">
+                          {projection.plannedSgpa.toFixed(2)}
+                        </span>
+                      ) : null}
+                    </button>
+
+                    {futureSemesters.map((fut) => {
+                      const stats = resolveFutureSemesterStats(fut);
+                      const isActive = effectivePlannerSem === fut.semester;
+                      return (
+                        <button
+                          key={fut.semester}
+                          type="button"
+                          role="tab"
+                          aria-selected={isActive}
+                          onClick={() => setActivePlannerSem(fut.semester)}
+                          className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                            isActive
+                              ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                          }`}
+                        >
+                          Sem {fut.semester}
+                          <span className="ml-1.5 font-mono text-[11px] opacity-75">
+                            {stats.sgpa.toFixed(2)}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={addFutureSemester}
+                    disabled={futureSemesters.length >= 6}
+                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+                  >
+                    <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                    Add semester
+                  </button>
+                </div>
+
+                {/* Quick Fill & Active Semester Meta */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5 text-xs">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-slate-500 dark:text-slate-400">Quick fill:</span>
+                    {(['O', 'A+', 'A'] as const).map((g) => (
+                      <button
+                        key={g}
+                        type="button"
+                        onClick={() => applyGradeToActiveSemester(g)}
+                        className="rounded border border-slate-200 dark:border-slate-700 px-2 py-0.5 font-mono text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                      >
+                        All {g}
+                      </button>
+                    ))}
+                  </div>
+
+                  {activeFutureSem ? (
+                    <div className="flex items-center gap-2">
+                      {!activeFutureSem.courses ? (
+                        <button
+                          type="button"
+                          onClick={() => restoreCoursePlanForFutureSemester(activeFutureSem.semester)}
+                          className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline cursor-pointer"
+                        >
+                          Switch to course grades
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => addCourseToFutureSemester(activeFutureSem.semester)}
+                          disabled={activeFutureSem.courses.length >= 10}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline cursor-pointer disabled:opacity-45"
+                        >
+                          <Plus className="h-3 w-3" aria-hidden="true" />
+                          Add course
+                        </button>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
               </div>
 
-              <div className="divide-y divide-slate-200 dark:divide-slate-800">
-                {plannedCourses.map((course) => (
-                  <div
-                    key={course.courseCode}
-                    className="px-5 py-3 flex items-center justify-between gap-4"
-                  >
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">
-                        {course.courseName}
-                      </p>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-                        {course.courseCode} · {course.credits} credits
-                      </p>
+              {effectivePlannerSem === payload.currentSemester ? (
+                <div className="divide-y divide-slate-200 dark:divide-slate-800">
+                  {plannedCourses.map((course) => (
+                    <div
+                      key={course.courseCode}
+                      className="px-5 py-3 flex items-center justify-between gap-4"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">
+                          {course.courseName}
+                        </p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+                          {course.courseCode} · {course.credits} credits
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <span className="font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400">
+                          {GRADE_POINTS[course.expectedGrade]} pts
+                        </span>
+                        <select
+                          aria-label={`Expected grade for ${course.courseName}`}
+                          value={course.expectedGrade}
+                          onChange={(e) =>
+                            updatePlannedGrade(course.courseCode, e.target.value as GradeLetter)
+                          }
+                          className="rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1.5 font-mono text-xs font-medium text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none cursor-pointer"
+                        >
+                          {ORDERED_GRADES.map((g) => (
+                            <option key={g} value={g}>
+                              {g} ({GRADE_POINTS[g]})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      <span className="font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400">
-                        {GRADE_POINTS[course.expectedGrade]} pts
-                      </span>
-                      <select
-                        aria-label={`Expected grade for ${course.courseName}`}
-                        value={course.expectedGrade}
-                        onChange={(e) =>
-                          updatePlannedGrade(course.courseCode, e.target.value as GradeLetter)
-                        }
-                        className="rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1.5 font-mono text-xs font-medium text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none cursor-pointer"
+                  ))}
+                </div>
+              ) : activeFutureSem ? (
+                activeFutureSem.courses && activeFutureSem.courses.length > 0 ? (
+                  <div className="divide-y divide-slate-200 dark:divide-slate-800">
+                    {activeFutureSem.courses.map((course) => (
+                      <div
+                        key={course.courseCode}
+                        className="px-5 py-3 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3"
                       >
-                        {ORDERED_GRADES.map((g) => (
-                          <option key={g} value={g}>
-                            {g} ({GRADE_POINTS[g]})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                        <div className="flex-1 min-w-[160px]">
+                          <input
+                            type="text"
+                            value={course.courseName}
+                            maxLength={80}
+                            onChange={(e) =>
+                              updateFutureCourse(activeFutureSem.semester, course.courseCode, {
+                                courseName: e.target.value,
+                              })
+                            }
+                            aria-label={`Course name for ${course.courseCode}`}
+                            className="w-full rounded-md border border-transparent hover:border-slate-200 dark:hover:border-slate-700 focus:border-blue-600 bg-transparent px-1.5 py-0.5 -ml-1.5 text-sm font-medium text-slate-900 dark:text-slate-100 focus:bg-white dark:focus:bg-slate-950 focus:outline-none"
+                          />
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+                            {course.courseCode} · Sem {activeFutureSem.semester}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2.5 shrink-0">
+                          <label className="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
+                            <span>Cr</span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={12}
+                              step={1}
+                              value={course.credits}
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                if (Number.isFinite(val)) {
+                                  updateFutureCourse(activeFutureSem.semester, course.courseCode, {
+                                    credits: Math.min(12, Math.max(1, Math.round(val))),
+                                  });
+                                }
+                              }}
+                              aria-label={`Credits for ${course.courseName}`}
+                              className="w-12 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-1.5 py-1 text-right font-mono text-xs tabular-nums text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none"
+                            />
+                          </label>
+
+                          <select
+                            aria-label={`Expected grade for ${course.courseName} in Semester ${activeFutureSem.semester}`}
+                            value={course.expectedGrade}
+                            onChange={(e) =>
+                              updateFutureCourse(activeFutureSem.semester, course.courseCode, {
+                                expectedGrade: e.target.value as GradeLetter,
+                              })
+                            }
+                            className="rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1.5 font-mono text-xs font-medium text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none cursor-pointer"
+                          >
+                            {ORDERED_GRADES.map((g) => (
+                              <option key={g} value={g}>
+                                {g} ({GRADE_POINTS[g]})
+                              </option>
+                            ))}
+                          </select>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              removeCourseFromFutureSemester(
+                                activeFutureSem.semester,
+                                course.courseCode
+                              )
+                            }
+                            disabled={activeFutureSem.courses.length <= 1}
+                            aria-label={`Remove ${course.courseName}`}
+                            className="rounded-md p-1.5 text-slate-400 hover:text-red-700 dark:hover:text-red-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                ) : (
+                  <div className="p-6 text-center space-y-2.5">
+                    <p className="text-sm text-slate-600 dark:text-slate-400">
+                      Semester {activeFutureSem.semester} is currently using manual SGPA (
+                      <span className="font-mono font-semibold text-slate-900 dark:text-slate-100">
+                        {activeFutureSem.expectedSgpa.toFixed(2)}
+                      </span>{' '}
+                      across {activeFutureSem.credits} cr).
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => restoreCoursePlanForFutureSemester(activeFutureSem.semester)}
+                      className="rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3.5 py-2 text-xs font-medium text-white transition-colors cursor-pointer"
+                    >
+                      Plan Semester {activeFutureSem.semester} by course grades
+                    </button>
+                  </div>
+                )
+              ) : null}
+
+              {/* Semester Plan Summary Footer */}
+              <div className="border-t border-slate-200 dark:border-slate-800 px-5 py-3 text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center justify-between gap-2">
+                {(() => {
+                  const activePt = trajectoryBySemester.get(effectivePlannerSem);
+                  return (
+                    <>
+                      <span className="font-mono tabular-nums">
+                        Sem {effectivePlannerSem} SGPA{' '}
+                        <strong className="text-slate-900 dark:text-slate-100">
+                          {activePt ? activePt.sgpa.toFixed(2) : '—'}
+                        </strong>
+                        {activePt ? ` (${activePt.credits} cr)` : ''}
+                      </span>
+                      <span className="font-mono tabular-nums">
+                        Cumulative CGPA after Sem {effectivePlannerSem}:{' '}
+                        <strong className="text-blue-700 dark:text-blue-400">
+                          {activePt ? activePt.cgpa.toFixed(2) : summary.cgpa.toFixed(2)}
+                        </strong>
+                      </span>
+                    </>
+                  );
+                })()}
               </div>
             </section>
           </div>

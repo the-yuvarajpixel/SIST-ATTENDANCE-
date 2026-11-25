@@ -1,6 +1,7 @@
 import type {
   AttendanceSubject,
   CaeStanding,
+  CaeTermTrendPoint,
   CourseGrade,
   DeadlineItem,
   GradeLetter,
@@ -286,8 +287,47 @@ export function validateResults(input: unknown): ResultsPayload {
     }
   }
 
+  let caeHistory: CaeTermTrendPoint[] = [];
+  if (input.caeHistory !== undefined) {
+    if (!Array.isArray(input.caeHistory)) {
+      issues.push('caeHistory must be an array when provided');
+    } else {
+      caeHistory = input.caeHistory.map((item, idx) => {
+        if (!isRecord(item)) {
+          issues.push(`caeHistory[${idx}] invalid`);
+          return {
+            semester: 1,
+            termLabel: '',
+            cae1Avg: 0,
+            cae2Avg: null,
+            internalAvg: 0,
+            internalMax: 50,
+            subjectCount: 0,
+          };
+        }
+        const internalMax = assertFiniteNumber(item.internalMax ?? 50, `caeHistory[${idx}].internalMax`, issues, 1, 200);
+        const cae1Avg = assertFiniteNumber(item.cae1Avg, `caeHistory[${idx}].cae1Avg`, issues, 0, internalMax);
+        const cae2Avg =
+          item.cae2Avg === null || item.cae2Avg === undefined
+            ? null
+            : assertFiniteNumber(item.cae2Avg, `caeHistory[${idx}].cae2Avg`, issues, 0, internalMax);
+        const internalAvg = assertFiniteNumber(item.internalAvg, `caeHistory[${idx}].internalAvg`, issues, 0, internalMax);
+        return {
+          semester: assertFiniteNumber(item.semester, `caeHistory[${idx}].semester`, issues, 1, 12),
+          termLabel: assertNonEmptyString(item.termLabel, `caeHistory[${idx}].termLabel`, issues),
+          cae1Avg,
+          cae2Avg,
+          internalAvg,
+          internalMax,
+          subjectCount: assertFiniteNumber(item.subjectCount ?? 0, `caeHistory[${idx}].subjectCount`, issues, 0, 30),
+          isCurrent: Boolean(item.isCurrent),
+        };
+      });
+    }
+  }
+
   if (issues.length > 0) throw new SchemaValidationError('results', issues);
-  return { semesters, currentSemester, currentCourses, caeMarks };
+  return { semesters, currentSemester, currentCourses, caeMarks, caeHistory };
 }
 
 export function validateDeadlines(input: unknown): DeadlineItem[] {

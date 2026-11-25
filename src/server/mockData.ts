@@ -307,6 +307,53 @@ export function buildMockResults(): ResultsPayload {
         remarks: 'All Wireshark & TLS lab observations verified on time.',
       },
     ],
+    caeHistory: [
+      {
+        semester: 1,
+        termLabel: 'Nov 2023',
+        cae1Avg: 35.2,
+        cae2Avg: 36.8,
+        internalAvg: 36.4,
+        internalMax: 50,
+        subjectCount: 5,
+      },
+      {
+        semester: 2,
+        termLabel: 'May 2024',
+        cae1Avg: 37.4,
+        cae2Avg: 38.6,
+        internalAvg: 38.2,
+        internalMax: 50,
+        subjectCount: 5,
+      },
+      {
+        semester: 3,
+        termLabel: 'Nov 2024',
+        cae1Avg: 38.8,
+        cae2Avg: 40.4,
+        internalAvg: 39.7,
+        internalMax: 50,
+        subjectCount: 5,
+      },
+      {
+        semester: 4,
+        termLabel: 'May 2025',
+        cae1Avg: 41.6,
+        cae2Avg: 43.0,
+        internalAvg: 42.5,
+        internalMax: 50,
+        subjectCount: 5,
+      },
+      {
+        semester: 5,
+        termLabel: 'Nov 2025',
+        cae1Avg: 40.2,
+        cae2Avg: 41.8,
+        internalAvg: 41.2,
+        internalMax: 50,
+        subjectCount: 5,
+      },
+    ],
   };
 }
 
