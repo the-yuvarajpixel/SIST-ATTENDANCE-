@@ -89,9 +89,10 @@ export function writeSessionCookie(req: Request, res: Response, session: Omit<St
   const full: StoredSession = { ...session, exp: Date.now() + SESSION_TTL_MS };
   const sealed = encryptSession(full);
   const secure = isSecureRequest(req);
+  const cookieAttrs = secure ? 'SameSite=None; Secure; Partitioned' : 'SameSite=Lax';
   const cookies = [
-    `${COOKIE_NAME}=${encodeURIComponent(sealed)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secure ? '; Secure' : ''}`,
-    `${SIGNED_OUT_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`,
+    `${COOKIE_NAME}=${encodeURIComponent(sealed)}; Path=/; HttpOnly; ${cookieAttrs}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
+    `${SIGNED_OUT_COOKIE}=; Path=/; HttpOnly; ${cookieAttrs}; Max-Age=0`,
   ];
   res.setHeader('Set-Cookie', cookies);
   return full;
@@ -99,9 +100,10 @@ export function writeSessionCookie(req: Request, res: Response, session: Omit<St
 
 export function clearSessionCookie(req: Request, res: Response): void {
   const secure = isSecureRequest(req);
+  const cookieAttrs = secure ? 'SameSite=None; Secure; Partitioned' : 'SameSite=Lax';
   res.setHeader('Set-Cookie', [
-    `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? '; Secure' : ''}`,
-    `${SIGNED_OUT_COOKIE}=1; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${secure ? '; Secure' : ''}`,
+    `${COOKIE_NAME}=; Path=/; HttpOnly; ${cookieAttrs}; Max-Age=0`,
+    `${SIGNED_OUT_COOKIE}=1; Path=/; HttpOnly; ${cookieAttrs}; Max-Age=86400`,
   ]);
 }
 
