@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { LiveUpstreamError } from '../core/liveParsers';
 import {
+  exchangeMoodleCredentialsForToken,
   fetchLiveAttendance,
   fetchLiveDeadlines,
   fetchLiveNotifications,
@@ -19,6 +20,38 @@ function jsonResponse(body: unknown, status = 200): Response {
     headers: { 'Content-Type': 'application/json' },
   });
 }
+
+test('exchangeMoodleCredentialsForToken posts credentials in form body and returns verified token', async () => {
+  let capturedUrl = '';
+  let capturedInit: RequestInit | undefined;
+
+  const mockFetch: typeof fetch = async (input, init) => {
+    capturedUrl = String(input);
+    capturedInit = init;
+    return jsonResponse({ token: 'moodle_exchanged_token_987654' });
+  };
+
+  const token = await exchangeMoodleCredentialsForToken('42110482', 'my-secret-pass', {
+    fetchImpl: mockFetch,
+    env: { LMS_BASE_URL: 'https://sathyabama.cognibot.in' },
+  });
+
+  assert.equal(token, 'moodle_exchanged_token_987654');
+  assert.equal(capturedUrl, 'https://sathyabama.cognibot.in/login/token.php');
+  assert.equal(capturedUrl.includes('my-secret-pass'), false);
+  assert.equal(capturedInit?.method, 'POST');
+  assert.equal(capturedInit?.redirect, 'error');
+  assert.match(String(capturedInit?.body), /service=moodle_mobile_app/);
+
+  await assert.rejects(
+    () =>
+      exchangeMoodleCredentialsForToken('42110482', 'wrong', {
+        fetchImpl: async () => jsonResponse({ error: 'Invalid login, please try again', errorcode: 'invalidlogin' }),
+        env: { LMS_BASE_URL: 'https://sathyabama.cognibot.in' },
+      }),
+    (err: unknown) => err instanceof LiveUpstreamError && err.status === 401 && err.field === 'lmsPassword'
+  );
+});
 
 test('verifyMoodleToken posts wstoken in form body (never query string) with redirect error policy', async () => {
   let capturedUrl = '';
@@ -128,7 +161,11 @@ test('LMS-only live session fetches Moodle profile, deadlines, and notifications
   );
 });
 
-test('getLiveAdapterConfig flags invalid ERP_BASE_URL and probeUpstreamReachability handles timeouts', async () => {
+test('getLiveAdapterConfig defaults to Sathyabama ERP & LMS, flags invalid URLs, and probes reachability', async () => {
+  const defaultCfg = getLiveAdapterConfig({});
+  assert.equal(defaultCfg.erpBaseUrl, 'https://erp.sathyabama.ac.in');
+  assert.equal(defaultCfg.lmsBaseUrl, 'https://sathyabama.cognibot.in');
+
   const badCfg = getLiveAdapterConfig({ ERP_BASE_URL: 'http://127.0.0.1:8080' });
   assert.equal(badCfg.erpBaseUrl, null);
   assert.ok(badCfg.erpConfigError);

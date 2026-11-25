@@ -7,6 +7,7 @@ export type NavSection =
   | 'results'
   | 'deadlines'
   | 'notifications'
+  | 'live-guide'
   | 'setup';
 
 export interface StudentProfile {

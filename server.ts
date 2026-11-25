@@ -13,6 +13,7 @@ import {
 } from './src/core/schemas';
 import type { DataSourceMode, HealthCheckItem, HealthReport, SectionEnvelope } from './src/core/types';
 import {
+  exchangeMoodleCredentialsForToken,
   fetchLiveAttendance,
   fetchLiveDeadlines,
   fetchLiveNotifications,
@@ -110,9 +111,12 @@ export function createApp() {
     const cacheInfo = cache.stats();
     const liveConfig = getLiveAdapterConfig();
 
+    const erpProbePath = liveConfig.erpHost === 'erp.sathyabama.ac.in' ? '/account/login' : '/';
     const [erpProbe, lmsProbe] = deep
       ? await Promise.all([
-          liveConfig.erpBaseUrl ? probeUpstreamReachability(liveConfig.erpBaseUrl, '/') : Promise.resolve(null),
+          liveConfig.erpBaseUrl
+            ? probeUpstreamReachability(liveConfig.erpBaseUrl, erpProbePath)
+            : Promise.resolve(null),
           liveConfig.lmsBaseUrl
             ? probeUpstreamReachability(liveConfig.lmsBaseUrl, '/login/index.php')
             : Promise.resolve(null),
@@ -284,7 +288,10 @@ export function createApp() {
     }
     const mode: DataSourceMode = body.mode === 'live' ? 'live' : 'mock';
     const erpToken = typeof body.erpToken === 'string' ? body.erpToken.trim() : '';
-    const lmsToken = typeof body.lmsToken === 'string' ? body.lmsToken.trim() : '';
+    let lmsToken = typeof body.lmsToken === 'string' ? body.lmsToken.trim() : '';
+    const lmsUsername = typeof body.lmsUsername === 'string' ? body.lmsUsername.trim() : '';
+    const lmsPassword = typeof body.lmsPassword === 'string' ? body.lmsPassword : '';
+    const usingMoodleCreds = Boolean(lmsUsername || lmsPassword);
 
     const fieldErrors: Record<string, string> = {};
     if (!registerNumber) {
@@ -294,8 +301,19 @@ export function createApp() {
     }
 
     if (mode === 'live') {
-      if (!erpToken && !lmsToken) {
-        fieldErrors.lmsToken = 'Paste a Moodle LMS web-service token or an ERP session token to connect live.';
+      if (usingMoodleCreds) {
+        if (!lmsUsername) {
+          fieldErrors.lmsUsername = 'Enter your Moodle LMS username or register number.';
+        } else if (lmsUsername.length > 150) {
+          fieldErrors.lmsUsername = 'Moodle username is too long.';
+        }
+        if (!lmsPassword) {
+          fieldErrors.lmsPassword = 'Enter your Moodle LMS password.';
+        } else if (lmsPassword.length > 256) {
+          fieldErrors.lmsPassword = 'Password exceeds maximum allowed length.';
+        }
+      } else if (!erpToken && !lmsToken) {
+        fieldErrors.lmsToken = 'Sign in with Moodle credentials, or paste a Moodle LMS or ERP token.';
       }
       if (erpToken && (erpToken.length < 8 || erpToken.length > MAX_TOKEN_LENGTH)) {
         fieldErrors.erpToken = `ERP session token must be 8–${MAX_TOKEN_LENGTH} characters.`;
@@ -314,6 +332,11 @@ export function createApp() {
       try {
         let verifiedMoodleInfo: { userid: number; fullname: string } | null = null;
         let verifiedErpName: string | null = null;
+
+        if (!lmsToken && usingMoodleCreds) {
+          // Exchange Moodle username/password for a web-service token; password is never persisted.
+          lmsToken = await exchangeMoodleCredentialsForToken(lmsUsername, lmsPassword);
+        }
 
         if (lmsToken) {
           const siteInfo = await verifyMoodleToken(lmsToken);

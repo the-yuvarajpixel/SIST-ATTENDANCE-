@@ -17,6 +17,8 @@ export interface LoginInput {
   mode: DataSourceMode;
   erpToken?: string;
   lmsToken?: string;
+  lmsUsername?: string;
+  lmsPassword?: string;
 }
 
 export interface LoginErrorResponse {

@@ -26,6 +26,7 @@ import type {
 } from '../core/types';
 import type { StoredSession } from './session';
 
+const DEFAULT_ERP_BASE_URL = 'https://erp.sathyabama.ac.in';
 const DEFAULT_LMS_BASE_URL = 'https://sathyabama.cognibot.in';
 const DEFAULT_TIMEOUT_MS = 6_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MB cap per upstream JSON response
@@ -54,7 +55,7 @@ export interface LiveAdapterDeps {
 }
 
 export function getLiveAdapterConfig(env: NodeJS.ProcessEnv = process.env): LiveAdapterConfig {
-  const rawErp = (env.ERP_BASE_URL ?? '').trim();
+  const rawErp = (env.ERP_BASE_URL ?? DEFAULT_ERP_BASE_URL).trim();
   let erpBaseUrl: string | null = null;
   let erpHost: string | null = null;
   let erpConfigError: string | null = null;
@@ -272,6 +273,83 @@ async function callMoodleFunction(
   }
 
   return readBoundedJson(res, 'Moodle LMS');
+}
+
+export async function exchangeMoodleCredentialsForToken(
+  username: string,
+  password: string,
+  deps: LiveAdapterDeps = {}
+): Promise<string> {
+  const config = getLiveAdapterConfig(deps.env);
+  if (config.lmsConfigError) {
+    throw new LiveUpstreamError(503, `Moodle LMS configuration error: ${config.lmsConfigError}`, {
+      field: 'lmsUsername',
+    });
+  }
+  if (!config.lmsBaseUrl) {
+    throw new LiveUpstreamError(503, 'LMS_BASE_URL is not configured on the server.', {
+      field: 'lmsUsername',
+    });
+  }
+
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const endpoint = `${config.lmsBaseUrl}/login/token.php`;
+
+  // Send credentials strictly in POST form body (never query string); password is never stored or logged.
+  const body = new URLSearchParams({
+    username: username.trim(),
+    password,
+    service: 'moodle_mobile_app',
+  });
+
+  let res: Response;
+  try {
+    res = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: body.toString(),
+      redirect: 'error',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    const isTimeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+    throw new LiveUpstreamError(
+      isTimeout ? 504 : 502,
+      isTimeout
+        ? `Moodle LMS (${config.lmsHost}) timed out after ${Math.round(timeoutMs / 1000)}s.`
+        : `Unable to reach Moodle LMS (${config.lmsHost}).`,
+      { field: 'lmsPassword' }
+    );
+  }
+
+  if (!res.ok) {
+    throw new LiveUpstreamError(502, `Moodle login endpoint returned HTTP ${res.status}.`, {
+      field: 'lmsPassword',
+    });
+  }
+
+  const parsed = await readBoundedJson(res, 'Moodle LMS');
+  if (typeof parsed === 'object' && parsed !== null) {
+    const rec = parsed as Record<string, unknown>;
+    if (typeof rec.token === 'string' && rec.token.trim().length >= 8) {
+      return rec.token.trim();
+    }
+    if (typeof rec.error === 'string' && rec.error.trim().length > 0) {
+      const code = typeof rec.errorcode === 'string' ? rec.errorcode : 'invalidlogin';
+      throw new LiveUpstreamError(401, `Moodle sign-in failed (${code}): ${rec.error.trim()}`, {
+        code,
+        field: 'lmsPassword',
+      });
+    }
+  }
+
+  throw new LiveUpstreamError(502, 'Moodle login endpoint did not return a web-service token.', {
+    field: 'lmsPassword',
+  });
 }
 
 export async function verifyMoodleToken(

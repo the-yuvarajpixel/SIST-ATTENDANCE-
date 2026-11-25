@@ -22,15 +22,17 @@ import type {
   Weekday,
 } from './types';
 
+export type LiveAuthField = 'erpToken' | 'lmsToken' | 'lmsUsername' | 'lmsPassword';
+
 export class LiveUpstreamError extends Error {
   readonly status: number;
   readonly code?: string;
-  readonly field?: 'erpToken' | 'lmsToken';
+  readonly field?: LiveAuthField;
 
   constructor(
     status: number,
     message: string,
-    options?: { code?: string; field?: 'erpToken' | 'lmsToken' }
+    options?: { code?: string; field?: LiveAuthField }
   ) {
     super(message);
     this.name = 'LiveUpstreamError';

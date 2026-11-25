@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AttendanceView } from './components/AttendanceView';
 import { CommandPalette } from './components/CommandPalette';
 import { DeadlinesView } from './components/DeadlinesView';
+import { LiveLoginGuideView } from './components/LiveLoginGuideView';
 import { NotificationsView } from './components/NotificationsView';
 import { OverviewView, type SectionState } from './components/OverviewView';
 import { ResultsView } from './components/ResultsView';
@@ -76,8 +77,9 @@ function getInitialTarget(): number {
 }
 
 function getInitialSection(): NavSection {
-  if (typeof window !== 'undefined' && window.location.pathname === '/setup') {
-    return 'setup';
+  if (typeof window !== 'undefined') {
+    if (window.location.pathname === '/setup') return 'setup';
+    if (window.location.pathname === '/live-guide') return 'live-guide';
   }
   return 'overview';
 }
@@ -85,6 +87,9 @@ function getInitialSection(): NavSection {
 export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme);
   const [activeSection, setActiveSection] = useState<NavSection>(getInitialSection);
+  const [showPreLoginGuide, setShowPreLoginGuide] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.location.pathname === '/live-guide'
+  );
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
@@ -335,13 +340,30 @@ export default function App() {
   }
 
   if (!user) {
+    if (showPreLoginGuide) {
+      return (
+        <LiveLoginGuideView
+          standalone
+          theme={theme}
+          onToggleTheme={handleToggleTheme}
+          onBack={() => setShowPreLoginGuide(false)}
+          onGoToLiveSignIn={() => {
+            setSignInInitialMode('live');
+            setShowPreLoginGuide(false);
+          }}
+        />
+      );
+    }
+
     return (
       <SignInView
         theme={theme}
         initialMode={signInInitialMode}
         onToggleTheme={handleToggleTheme}
+        onOpenGuide={() => setShowPreLoginGuide(true)}
         onSignedIn={(signedUser) => {
           setSignInInitialMode(undefined);
+          setShowPreLoginGuide(false);
           setUser(signedUser);
           setActiveSection('overview');
         }}
@@ -437,6 +459,12 @@ export default function App() {
                 onToggleRead={handleToggleReadNotification}
                 onMarkAllRead={handleMarkAllRead}
                 onRetry={() => void loadSection('notifications', true)}
+              />
+            ) : null}
+
+            {activeSection === 'live-guide' ? (
+              <LiveLoginGuideView
+                onGoToLiveSignIn={() => void handleSignOut('live')}
               />
             ) : null}
 

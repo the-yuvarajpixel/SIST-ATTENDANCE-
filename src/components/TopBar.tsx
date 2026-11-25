@@ -8,6 +8,7 @@ const SECTION_TITLES: Record<NavSection, string> = {
   results: 'Results & CGPA',
   deadlines: 'Deadlines',
   notifications: 'Notifications',
+  'live-guide': 'Live Login Guide',
   setup: 'Setup & Health',
 };
 

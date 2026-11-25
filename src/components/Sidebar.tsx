@@ -1,6 +1,7 @@
 import {
   Activity,
   Bell,
+  BookOpen,
   CalendarClock,
   CheckSquare,
   GraduationCap,
@@ -31,6 +32,7 @@ const NAV_ITEMS: { id: NavSection; label: string; icon: typeof LayoutDashboard }
   { id: 'results', label: 'Results & CGPA', icon: TrendingUp },
   { id: 'deadlines', label: 'Deadlines', icon: GraduationCap },
   { id: 'notifications', label: 'Notifications', icon: Bell },
+  { id: 'live-guide', label: 'Live Login Guide', icon: BookOpen },
   { id: 'setup', label: 'Setup & Health', icon: Activity },
 ];
 
