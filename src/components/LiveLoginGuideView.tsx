@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   Sun,
 } from 'lucide-react';
+import { AppFooter } from './AppFooter';
 
 interface LiveLoginGuideViewProps {
   /** True when rendered as a standalone pre-login page (before signing in). */
@@ -524,6 +525,7 @@ export function LiveLoginGuideView({
       <main className="flex-1 px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
         <div className="mx-auto max-w-5xl">{content}</div>
       </main>
+      <AppFooter />
     </div>
   );
 }

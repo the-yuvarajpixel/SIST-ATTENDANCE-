@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AppFooter } from './components/AppFooter';
 import { AttendanceView } from './components/AttendanceView';
 import { CommandPalette } from './components/CommandPalette';
 import { DeadlinesView } from './components/DeadlinesView';
@@ -480,6 +481,7 @@ export default function App() {
             ) : null}
           </div>
         </main>
+        <AppFooter />
       </div>
 
       <CommandPalette

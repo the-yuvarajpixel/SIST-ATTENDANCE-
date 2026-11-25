@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { BookOpen, CheckCircle2, ChevronDown, ExternalLink, Info, Lock, Moon, Sun } from 'lucide-react';
 import type { DataSourceMode, LiveAdaptersSummary, SessionUser } from '../core/types';
 import { api } from '../lib/api';
+import { AppFooter } from './AppFooter';
 
 interface SignInViewProps {
   theme: 'light' | 'dark';
@@ -525,6 +526,7 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
           </section>
         </div>
       </main>
+      <AppFooter />
     </div>
   );
 }
