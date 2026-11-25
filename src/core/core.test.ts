@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeAttendanceStats, computeOverallAttendance, simulateAttendance } from './attendance';
+import {
+  analyzeAttendanceInsights,
+  computeAttendanceStats,
+  computeOverallAttendance,
+  simulateAttendance,
+} from './attendance';
 import {
   buildCgpaTrajectory,
   computeCgpaSummary,
@@ -64,6 +69,55 @@ test('overall attendance aggregates across subjects', () => {
   assert.equal(overall.overallPercentage, 78.1);
   assert.equal(overall.shortageCount, 1);
   assert.equal(overall.safeCount, 1);
+});
+
+test('attendance insights ranks priority courses and projects weekly recovery against target', () => {
+  const subjects: AttendanceSubject[] = [
+    { courseCode: 'SCSA1601', courseName: 'Computer Networks', faculty: 'Dr. Priya', credits: 4, attended: 28, total: 32, lastUpdated: '2026-11-23' },
+    { courseCode: 'SCSA1602', courseName: 'Compiler Design', faculty: 'Prof. Karthik', credits: 4, attended: 25, total: 36, lastUpdated: '2026-11-23' },
+    { courseCode: 'SCSA1604', courseName: 'Cloud Computing', faculty: 'Prof. Arjun', credits: 3, attended: 24, total: 31, lastUpdated: '2026-11-23' },
+    { courseCode: 'SCSA1605', courseName: 'Software Engineering', faculty: 'Dr. Meena', credits: 3, attended: 21, total: 29, lastUpdated: '2026-11-23' },
+  ];
+  const timetable: TimetableSlot[] = [
+    { id: '1', day: 'Mon', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1602', courseName: 'Compiler Design', room: 'CS-208', faculty: 'Prof. Karthik', kind: 'Lecture' },
+    { id: '2', day: 'Tue', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1602', courseName: 'Compiler Design', room: 'CS-208', faculty: 'Prof. Karthik', kind: 'Lecture' },
+    { id: '3', day: 'Wed', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1602', courseName: 'Compiler Design', room: 'CS-208', faculty: 'Prof. Karthik', kind: 'Lecture' },
+    { id: '4', day: 'Thu', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1602', courseName: 'Compiler Design', room: 'CS-208', faculty: 'Prof. Karthik', kind: 'Lecture' },
+    { id: '5', day: 'Mon', startTime: '11:00', endTime: '11:50', courseCode: 'SCSA1605', courseName: 'Software Engineering', room: 'CS-205', faculty: 'Dr. Meena', kind: 'Lecture' },
+    { id: '6', day: 'Wed', startTime: '11:00', endTime: '11:50', courseCode: 'SCSA1605', courseName: 'Software Engineering', room: 'CS-205', faculty: 'Dr. Meena', kind: 'Lecture' },
+    { id: '7', day: 'Fri', startTime: '11:00', endTime: '11:50', courseCode: 'SCSA1605', courseName: 'Software Engineering', room: 'CS-205', faculty: 'Dr. Meena', kind: 'Lecture' },
+    { id: '8', day: 'Tue', startTime: '14:00', endTime: '14:50', courseCode: 'SCSA1604', courseName: 'Cloud Computing', room: 'CS-204', faculty: 'Prof. Arjun', kind: 'Lecture' },
+    { id: '9', day: 'Thu', startTime: '14:00', endTime: '14:50', courseCode: 'SCSA1601', courseName: 'Computer Networks', room: 'CS-204', faculty: 'Dr. Priya', kind: 'Lecture' },
+  ];
+
+  const at75 = analyzeAttendanceInsights(subjects, timetable, 75);
+  assert.equal(at75.trendStatus, 'at-risk');
+  assert.equal(at75.distribution.shortageCount, 2);
+  assert.equal(at75.distribution.borderlineCount, 1);
+  assert.equal(at75.distribution.safeCount, 1);
+  assert.equal(at75.totalClassesNeededToRecover, 11); // 8 + 3
+  assert.equal(at75.priorityCourses[0].subject.courseCode, 'SCSA1602');
+  assert.equal(at75.priorityCourses[0].priorityLevel, 'urgent');
+  assert.equal(at75.priorityCourses[0].weeklySessions, 4);
+  assert.equal(at75.priorityCourses[0].estimatedWeeksToRecover, 2); // ceil(8 / 4)
+  assert.equal(at75.priorityCourses[1].subject.courseCode, 'SCSA1605');
+  assert.equal(at75.priorityCourses[1].recoversInOneWeek, true); // needs 3, has 3/wk
+  assert.equal(at75.priorityCourses[2].subject.courseCode, 'SCSA1604');
+  assert.equal(at75.priorityCourses[2].priorityLevel, 'watch');
+  assert.equal(at75.oneWeekProjection.horizon, 'week');
+  assert.equal(at75.oneWeekProjection.coursesRecoveredInOneWeek, 1);
+  assert.ok(at75.oneWeekProjection.deltaPercentage > 0);
+
+  // Raising target to 85% increases shortage count and recovery classes needed
+  const at85 = analyzeAttendanceInsights(subjects, timetable, 85);
+  assert.equal(at85.distribution.shortageCount, 3);
+  assert.ok(at85.totalClassesNeededToRecover > at75.totalClassesNeededToRecover);
+
+  // Empty subjects handled safely without NaN
+  const empty = analyzeAttendanceInsights([], [], 75);
+  assert.equal(empty.priorityCourses.length, 0);
+  assert.equal(empty.overallPercentage, 100);
+  assert.equal(empty.trendStatus, 'on-track');
 });
 
 test('GPA summary, target planner, and projected CGPA compute accurately', () => {

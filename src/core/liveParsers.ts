@@ -22,7 +22,13 @@ import type {
   Weekday,
 } from './types';
 
-export type LiveAuthField = 'erpToken' | 'lmsToken' | 'lmsUsername' | 'lmsPassword';
+export type LiveAuthField =
+  | 'erpToken'
+  | 'erpUsername'
+  | 'erpPassword'
+  | 'lmsToken'
+  | 'lmsUsername'
+  | 'lmsPassword';
 
 export class LiveUpstreamError extends Error {
   readonly status: number;

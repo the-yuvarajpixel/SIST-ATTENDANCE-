@@ -4,6 +4,7 @@ import type {
   DeadlineItem,
   HealthReport,
   NotificationItem,
+  PortalSyncReport,
   ResultsPayload,
   SectionEnvelope,
   SessionUser,
@@ -16,6 +17,18 @@ export interface LoginInput {
   name?: string;
   mode: DataSourceMode;
   erpToken?: string;
+  erpUsername?: string;
+  erpPassword?: string;
+  lmsToken?: string;
+  lmsUsername?: string;
+  lmsPassword?: string;
+}
+
+export interface ConnectPortalsInput {
+  registerNumber?: string;
+  erpToken?: string;
+  erpUsername?: string;
+  erpPassword?: string;
   lmsToken?: string;
   lmsUsername?: string;
   lmsPassword?: string;
@@ -66,6 +79,17 @@ export const api = {
 
   logout() {
     return requestJson<{ ok: boolean }>('/api/auth/logout', { method: 'POST' });
+  },
+
+  connectPortals(input: ConnectPortalsInput) {
+    return requestJson<{ authenticated: boolean; user: SessionUser }>('/api/auth/connect', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  syncPortals() {
+    return requestJson<PortalSyncReport>('/api/portal/sync', { method: 'POST' });
   },
 
   getHealth(deep = false) {

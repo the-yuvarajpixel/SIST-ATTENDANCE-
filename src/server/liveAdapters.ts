@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   LiveUpstreamError,
   buildProfileFromMoodle,
@@ -39,6 +40,7 @@ export interface LiveAdapterConfig {
   lmsHost: string | null;
   lmsConfigError: string | null;
   erpPaths: {
+    login: string;
     profile: string;
     attendance: string;
     timetable: string;
@@ -99,6 +101,7 @@ export function getLiveAdapterConfig(env: NodeJS.ProcessEnv = process.env): Live
     lmsHost,
     lmsConfigError,
     erpPaths: {
+      login: safePath(env.ERP_LOGIN_PATH, '/erp/api/v1.0/MasterStudent/login_sec'),
       profile: safePath(env.ERP_PROFILE_PATH, '/api/student/profile'),
       attendance: safePath(env.ERP_ATTENDANCE_PATH, '/api/student/attendance'),
       timetable: safePath(env.ERP_TIMETABLE_PATH, '/api/student/timetable'),
@@ -134,13 +137,16 @@ function buildErpAuthHeaders(erpToken: string, registerNumber: string): Record<s
     Accept: 'application/json',
     'X-Register-Number': registerNumber,
   };
-  // Support both Bearer JWTs and browser session cookies (e.g. PHPSESSID=... or JSESSIONID=...)
+  // Support both Bearer/Access-Token JWTs and browser session cookies (e.g. PHPSESSID=... or JSESSIONID=...)
   if (/^[A-Za-z0-9_.-]+=/.test(trimmed)) {
     headers.Cookie = trimmed;
   } else if (/^bearer\s+/i.test(trimmed)) {
-    headers.Authorization = trimmed;
+    const rawToken = trimmed.replace(/^bearer\s+/i, '').trim();
+    headers.Authorization = `Bearer ${rawToken}`;
+    headers.Token = rawToken;
   } else {
     headers.Authorization = `Bearer ${trimmed}`;
+    headers.Token = trimmed;
   }
   return headers;
 }
@@ -350,6 +356,167 @@ export async function exchangeMoodleCredentialsForToken(
   throw new LiveUpstreamError(502, 'Moodle login endpoint did not return a web-service token.', {
     field: 'lmsPassword',
   });
+}
+
+function generateErpCaptchaKey(length = 48): string {
+  const alphabet = '0123456789abcdefghijklmnopqrstuvwxyz';
+  const bytes = randomBytes(length * 2);
+  let out = '';
+  for (let i = 0; i < bytes.length && out.length < length; i++) {
+    if (bytes[i] < 252) {
+      out += alphabet[bytes[i] % alphabet.length];
+    }
+  }
+  while (out.length < length) {
+    out += alphabet[randomBytes(1)[0] % alphabet.length];
+  }
+  return out;
+}
+
+export interface ErpCredentialExchangeResult {
+  token: string;
+  studentName?: string;
+}
+
+export async function exchangeErpCredentialsForToken(
+  username: string,
+  password: string,
+  deps: LiveAdapterDeps = {}
+): Promise<ErpCredentialExchangeResult> {
+  const config = getLiveAdapterConfig(deps.env);
+  if (config.erpConfigError) {
+    throw new LiveUpstreamError(503, `College ERP configuration error: ${config.erpConfigError}`, {
+      field: 'erpUsername',
+    });
+  }
+  if (!config.erpBaseUrl) {
+    throw new LiveUpstreamError(503, 'ERP_BASE_URL is not configured on the server.', {
+      field: 'erpUsername',
+    });
+  }
+
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const endpoint = `${config.erpBaseUrl}${config.erpPaths.login}`;
+
+  // Credentials are sent strictly in HTTPS POST JSON body and discarded immediately (never stored or logged).
+  const payload = {
+    RegisterNumber: username.trim(),
+    username: username.trim(),
+    Password: password,
+    password,
+    CapchaKey: generateErpCaptchaKey(48),
+    TurnstileToken: '',
+  };
+
+  let res: Response;
+  try {
+    res = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      redirect: 'error',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    const isTimeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+    throw new LiveUpstreamError(
+      isTimeout ? 504 : 502,
+      isTimeout
+        ? `College ERP (${config.erpHost}) timed out after ${Math.round(timeoutMs / 1000)}s.`
+        : `Unable to reach College ERP (${config.erpHost}).`,
+      { field: 'erpPassword' }
+    );
+  }
+
+  const parsed = await readBoundedJson(res, 'College ERP').catch((err) => {
+    if (!res.ok) {
+      throw new LiveUpstreamError(
+        res.status === 401 || res.status === 403 ? 401 : 502,
+        `College ERP login returned HTTP ${res.status}. If ERP requires browser captcha/OTP, sign in at ${config.erpHost} and use Paste Tokens.`,
+        { field: 'erpPassword' }
+      );
+    }
+    throw err;
+  });
+
+  if (typeof parsed === 'object' && parsed !== null) {
+    const rec = parsed as Record<string, unknown>;
+    const responseData =
+      typeof rec.responseData === 'object' && rec.responseData !== null
+        ? (rec.responseData as Record<string, unknown>)
+        : null;
+    const loginObj =
+      responseData && typeof responseData.login === 'object' && responseData.login !== null
+        ? (responseData.login as Record<string, unknown>)
+        : typeof rec.data === 'object' && rec.data !== null
+          ? (rec.data as Record<string, unknown>)
+          : null;
+
+    const rawToken =
+      (loginObj &&
+        (typeof loginObj.accessToken === 'string'
+          ? loginObj.accessToken
+          : typeof loginObj.token === 'string'
+            ? loginObj.token
+            : typeof loginObj.access_token === 'string'
+              ? loginObj.access_token
+              : null)) ||
+      (typeof rec.accessToken === 'string'
+        ? rec.accessToken
+        : typeof rec.token === 'string'
+          ? rec.token
+          : typeof rec.access_token === 'string'
+            ? rec.access_token
+            : null);
+
+    const statusOk = rec.status === undefined || rec.status === 1 || rec.status === true || rec.status === '1';
+
+    if (res.ok && statusOk && rawToken && rawToken.trim().length >= 8) {
+      const studentName =
+        loginObj && typeof loginObj.StudentName === 'string' && loginObj.StudentName.trim()
+          ? loginObj.StudentName.trim()
+          : loginObj && typeof loginObj.name === 'string' && loginObj.name.trim()
+            ? loginObj.name.trim()
+            : undefined;
+      return { token: rawToken.trim(), studentName };
+    }
+
+    const upstreamMsg =
+      typeof rec.message === 'string' && rec.message.trim()
+        ? rec.message.trim()
+        : typeof rec.error === 'string' && rec.error.trim()
+          ? rec.error.trim()
+          : null;
+
+    if (upstreamMsg) {
+      const needsTurnstile = /turnstile|captcha|bot|verify|otp/i.test(upstreamMsg);
+      throw new LiveUpstreamError(
+        401,
+        needsTurnstile
+          ? `College ERP requires browser verification (${upstreamMsg}). Sign in once at ${config.erpHost} and paste your Access-Token in the Paste Tokens tab.`
+          : `College ERP sign-in failed: ${upstreamMsg}`,
+        { field: 'erpPassword' }
+      );
+    }
+  }
+
+  if (!res.ok) {
+    throw new LiveUpstreamError(
+      res.status === 401 || res.status === 403 ? 401 : 502,
+      `College ERP login rejected credentials (HTTP ${res.status}).`,
+      { field: 'erpPassword' }
+    );
+  }
+
+  throw new LiveUpstreamError(
+    502,
+    `College ERP did not return an access token. If ${config.erpHost} requires browser captcha/OTP, sign in there and use Paste Tokens.`,
+    { field: 'erpPassword' }
+  );
 }
 
 export async function verifyMoodleToken(

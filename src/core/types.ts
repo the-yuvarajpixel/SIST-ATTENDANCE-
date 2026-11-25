@@ -7,6 +7,7 @@ export type NavSection =
   | 'results'
   | 'deadlines'
   | 'notifications'
+  | 'sync'
   | 'live-guide'
   | 'setup';
 
@@ -168,4 +169,30 @@ export interface SessionUser {
   erpTokenPresent: boolean;
   lmsTokenPresent: boolean;
   expiresAt: string;
+}
+
+export interface PortalSyncTargetStatus {
+  connected: boolean;
+  host: string;
+  status: 'synced' | 'disconnected' | 'error';
+  message: string;
+  latencyMs: number;
+}
+
+export interface PortalSyncSectionResult {
+  section: 'profile' | 'attendance' | 'timetable' | 'results' | 'deadlines' | 'notifications';
+  label: string;
+  source: DataOrigin;
+  status: 'synced' | 'stale' | 'error';
+  itemCount: number;
+  fetchedAt: string | null;
+  message: string;
+}
+
+export interface PortalSyncReport {
+  syncedAt: string;
+  mode: DataSourceMode;
+  moodle: PortalSyncTargetStatus;
+  erp: PortalSyncTargetStatus;
+  sections: PortalSyncSectionResult[];
 }

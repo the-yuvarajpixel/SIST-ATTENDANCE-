@@ -8,6 +8,7 @@ const SECTION_TITLES: Record<NavSection, string> = {
   results: 'Results & CGPA',
   deadlines: 'Deadlines',
   notifications: 'Notifications',
+  sync: 'Sync LMS & ERP',
   'live-guide': 'Live Login Guide',
   setup: 'Setup & Health',
 };
@@ -18,6 +19,7 @@ interface TopBarProps {
   refreshing: boolean;
   onToggleTheme: () => void;
   onOpenCommandPalette: () => void;
+  onOpenSync: () => void;
   onRefreshAll: () => void;
   onOpenMobileMenu: () => void;
 }
@@ -28,6 +30,7 @@ export function TopBar({
   refreshing,
   onToggleTheme,
   onOpenCommandPalette,
+  onOpenSync,
   onRefreshAll,
   onOpenMobileMenu,
 }: TopBarProps) {
@@ -68,6 +71,15 @@ export function TopBar({
           <kbd className="hidden md:inline font-mono text-[11px] text-slate-400 dark:text-slate-500">
             Ctrl K
           </kbd>
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenSync}
+          aria-label="Sync Moodle LMS and College ERP"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/40 px-3 py-1.5 text-xs font-medium text-blue-800 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+        >
+          <span>Sync LMS &amp; ERP</span>
         </button>
 
         <button

@@ -136,7 +136,7 @@ export function LiveLoginGuideView({
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
               }`}
             >
-              Moodle Login (Fastest)
+              Auto ERP + LMS Login
             </button>
             <button
               type="button"
@@ -173,9 +173,7 @@ export function LiveLoginGuideView({
               <div className="flex items-start gap-2.5 text-xs text-slate-600 dark:text-slate-400">
                 <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" aria-hidden="true" />
                 <p>
-                  Recommended for quick setup. Connects to{' '}
-                  <span className="font-mono text-slate-800 dark:text-slate-200">sathyabama.cognibot.in</span>{' '}
-                  automatically without copying tokens from browser menus.
+                  Fastest way to connect both portals. Enter your College ERP and Moodle LMS usernames and passwords once — passwords are exchanged over HTTPS and immediately discarded.
                 </p>
               </div>
               <ol className="space-y-3">
@@ -183,7 +181,7 @@ export function LiveLoginGuideView({
                   {
                     title: 'Open the Live ERP + LMS tab',
                     detail:
-                      'On the Sign-In screen, ensure the "Live ERP + LMS" tab is selected (open by default) and "Moodle Login" is chosen under Live Sign-In Method.',
+                      'On the Sign-In screen, ensure the "Live ERP + LMS" tab is selected (open by default) and "Auto ERP + LMS Login" is chosen.',
                   },
                   {
                     title: 'Enter your Sathyabama Register Number',
@@ -191,19 +189,19 @@ export function LiveLoginGuideView({
                       'Type your 6–14 character Register Number (for example, 42110482) without spaces.',
                   },
                   {
-                    title: 'Enter your Moodle Username and Password',
+                    title: 'Enter your College ERP Username and Password',
                     detail:
-                      'Leave Moodle Username blank if it is identical to your Register Number, or enter your Sathyabama college email/username if your Moodle login uses it. Then type your Moodle LMS password.',
+                      'Leave ERP Username blank if it matches your Register Number, then type your College ERP password for erp.sathyabama.ac.in.',
                   },
                   {
-                    title: '(Optional) Add your ERP Session Token',
+                    title: 'Enter your Moodle LMS Username and Password (or check "Same as ERP login")',
                     detail:
-                      'Leave ERP Session Token blank to sync Moodle LMS Deadlines and Notifications immediately, or paste your ERP token from the "College ERP Token" tab to also sync Attendance, Timetable, and CGPA.',
+                      'Check "Same as ERP login" if both portals share the same username and password, or enter your Moodle LMS username (Register Number or college email) and password separately.',
                   },
                   {
                     title: 'Click Connect Live',
                     detail:
-                      'The server exchanges your credentials once with sathyabama.cognibot.in/login/token.php, discards your password immediately, verifies the Moodle token, and opens your live dashboard.',
+                      'The server exchanges your credentials with erp.sathyabama.ac.in and sathyabama.cognibot.in, discards your passwords immediately, encrypts only the verified session tokens in an HttpOnly cookie, and opens your live dashboard. (If College ERP prompts for browser captcha/OTP, use the "College ERP Token" tab.)',
                   },
                 ].map((step, idx) => (
                   <li
@@ -300,32 +298,27 @@ export function LiveLoginGuideView({
                   {
                     title: 'Sign in at erp.sathyabama.ac.in',
                     detail:
-                      'Open https://erp.sathyabama.ac.in/account/login in a desktop browser and complete normal student sign-in until your ERP dashboard loads.',
+                      'Open https://erp.sathyabama.ac.in/account/login in a desktop browser, complete verification, and wait for your ERP student dashboard to load.',
                   },
                   {
                     title: 'Open Browser Developer Tools',
                     detail:
-                      'Press F12 (Windows/Linux) or Cmd + Option + I (macOS), then select the "Network" tab.',
+                      'Press F12 (Windows/Linux) or Cmd + Option + I (macOS), then click the "Application" tab (in Firefox, click "Storage").',
                   },
                   {
-                    title: 'Filter for API requests',
+                    title: 'Open Local Storage for erp.sathyabama.ac.in',
                     detail:
-                      'Click "Fetch/XHR" in the Network toolbar, then refresh the ERP page or open your Attendance tab so authenticated API calls appear.',
+                      'In the left sidebar, expand "Local Storage" and click "https://erp.sathyabama.ac.in".',
                   },
                   {
-                    title: 'Inspect Request Headers',
+                    title: 'Copy the Access-Token value',
                     detail:
-                      'Click any request sent to erp.sathyabama.ac.in/erp/api/... and open the "Headers" pane on the right.',
+                      'Find the key named "Access-Token" and copy its value. (Alternatively, open the Network tab → Fetch/XHR → click any /erp/api/ request → copy the "Authorization" request header.)',
                   },
                   {
-                    title: 'Copy your Authorization token or Session Cookie',
+                    title: 'Connect & Sync in SIST Student Portal',
                     detail:
-                      'Under "Request Headers", copy the "Authorization" value (for example, Bearer eyJ...), OR switch to Application → Cookies → https://erp.sathyabama.ac.in and copy your session cookie in NAME=VALUE format.',
-                  },
-                  {
-                    title: 'Connect Live in SIST Student Portal',
-                    detail:
-                      'Paste the copied token into the "ERP Session Token" field on the Live ERP + LMS sign-in form (with or without Moodle LMS) and click "Connect Live".',
+                      'Paste the copied token into the "ERP Session Token" field on the Sign-In screen (or inside the "Sync LMS & ERP" tab after signing in) and click "Connect Live" or "Connect & Sync Live".',
                   },
                 ].map((step, idx) => (
                   <li

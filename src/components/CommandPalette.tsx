@@ -52,6 +52,8 @@ export function CommandPalette({
       { id: 'nav-results', group: 'Navigate', label: 'Results & CGPA Planner', detail: 'Semester history and target grade planner', run: () => onNavigate('results') },
       { id: 'nav-deadlines', group: 'Navigate', label: 'Unified Deadlines', detail: 'LMS assignments, exams, and fee due dates', run: () => onNavigate('deadlines') },
       { id: 'nav-notifications', group: 'Navigate', label: 'Notifications & Circulars', detail: 'Searchable ERP and LMS feed', run: () => onNavigate('notifications') },
+      { id: 'nav-sync', group: 'Navigate', label: 'Sync Moodle LMS & College ERP', detail: 'Connect portals in-place and force live sync', run: () => onNavigate('sync') },
+      { id: 'nav-live-guide', group: 'Navigate', label: 'Live Login Guide', detail: 'Step-by-step Moodle LMS & College ERP setup', run: () => onNavigate('live-guide') },
       { id: 'nav-setup', group: 'Navigate', label: 'Setup & Health Diagnostics', detail: 'Check ERP/LMS readiness and resilience test', run: () => onNavigate('setup') },
       { id: 'act-theme', group: 'Action', label: 'Toggle Light / Dark Theme', detail: 'Switch portal color scheme', run: onToggleTheme },
       { id: 'act-refresh', group: 'Action', label: 'Refresh All Sections', detail: 'Re-fetch ERP and LMS data', run: onRefreshAll },

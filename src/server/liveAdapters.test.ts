@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { LiveUpstreamError } from '../core/liveParsers';
 import {
+  exchangeErpCredentialsForToken,
   exchangeMoodleCredentialsForToken,
   fetchLiveAttendance,
   fetchLiveDeadlines,
@@ -50,6 +51,54 @@ test('exchangeMoodleCredentialsForToken posts credentials in form body and retur
         env: { LMS_BASE_URL: 'https://sathyabama.cognibot.in' },
       }),
     (err: unknown) => err instanceof LiveUpstreamError && err.status === 401 && err.field === 'lmsPassword'
+  );
+});
+
+test('exchangeErpCredentialsForToken posts JSON credentials and extracts Sathyabama ERP accessToken', async () => {
+  let capturedUrl = '';
+  let capturedInit: RequestInit | undefined;
+
+  const mockFetch: typeof fetch = async (input, init) => {
+    capturedUrl = String(input);
+    capturedInit = init;
+    return jsonResponse({
+      status: 1,
+      responseData: {
+        login: {
+          accessToken: 'eyJhbGciOiJIUzI1NiJ9.erp_auto_token',
+          StudentName: 'Kavya Nair',
+        },
+      },
+    });
+  };
+
+  const result = await exchangeErpCredentialsForToken('42110482', 'erp-secret-pass', {
+    fetchImpl: mockFetch,
+    env: { ERP_BASE_URL: 'https://erp.sathyabama.ac.in' },
+  });
+
+  assert.equal(result.token, 'eyJhbGciOiJIUzI1NiJ9.erp_auto_token');
+  assert.equal(result.studentName, 'Kavya Nair');
+  assert.equal(capturedUrl, 'https://erp.sathyabama.ac.in/erp/api/v1.0/MasterStudent/login_sec');
+  assert.equal(capturedInit?.method, 'POST');
+  assert.equal(capturedInit?.redirect, 'error');
+  const sentBody = JSON.parse(String(capturedInit?.body));
+  assert.equal(sentBody.RegisterNumber, '42110482');
+  assert.equal(sentBody.Password, 'erp-secret-pass');
+  assert.equal(typeof sentBody.CapchaKey, 'string');
+  assert.equal(sentBody.CapchaKey.length, 48);
+
+  await assert.rejects(
+    () =>
+      exchangeErpCredentialsForToken('42110482', 'wrong', {
+        fetchImpl: async () => jsonResponse({ status: 0, message: 'Turnstile captcha verification failed' }),
+        env: { ERP_BASE_URL: 'https://erp.sathyabama.ac.in' },
+      }),
+    (err: unknown) =>
+      err instanceof LiveUpstreamError &&
+      err.status === 401 &&
+      err.field === 'erpPassword' &&
+      /browser verification/i.test(err.message)
   );
 });
 
@@ -105,9 +154,11 @@ test('verifyErpToken sends Bearer header for tokens and Cookie header for sessio
   });
 
   assert.equal(seenHeaders[0].Authorization, 'Bearer eyJhbGciOiJIUzI1NiJ9.token');
+  assert.equal(seenHeaders[0].Token, 'eyJhbGciOiJIUzI1NiJ9.token');
   assert.equal(seenHeaders[0].Cookie, undefined);
   assert.equal(seenHeaders[1].Cookie, 'PHPSESSID=abc123456789');
   assert.equal(seenHeaders[1].Authorization, undefined);
+  assert.equal(seenHeaders[1].Token, undefined);
 });
 
 test('LMS-only live session fetches Moodle profile, deadlines, and notifications while ERP sections fail cleanly', async () => {

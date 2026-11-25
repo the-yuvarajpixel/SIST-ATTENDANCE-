@@ -1,5 +1,10 @@
-import { ArrowRight, CalendarClock } from 'lucide-react';
-import { computeAttendanceStats, computeOverallAttendance } from '../core/attendance';
+import { useState } from 'react';
+import { ArrowRight, CalendarClock, TrendingUp } from 'lucide-react';
+import {
+  analyzeAttendanceInsights,
+  computeAttendanceStats,
+  computeOverallAttendance,
+} from '../core/attendance';
 import { computeCgpaSummary } from '../core/gpa';
 import { findNextClass } from '../core/schedule';
 import type {
@@ -31,9 +36,12 @@ interface OverviewViewProps {
   completedDeadlineIds: Set<string>;
   readNotificationIds: Set<string>;
   attendanceTarget: number;
+  onChangeAttendanceTarget?: (target: number) => void;
   onNavigate: (section: NavSection) => void;
   onRetrySection: (section: 'profile' | 'attendance' | 'timetable' | 'results' | 'deadlines' | 'notifications') => void;
 }
+
+const TARGET_OPTIONS = [75, 80, 85] as const;
 
 export function OverviewView({
   profile,
@@ -45,9 +53,12 @@ export function OverviewView({
   completedDeadlineIds,
   readNotificationIds,
   attendanceTarget,
+  onChangeAttendanceTarget,
   onNavigate,
   onRetrySection,
 }: OverviewViewProps) {
+  const [showAllPriorities, setShowAllPriorities] = useState(false);
+
   const attendanceList = attendance.envelope?.data ?? [];
   const timetableList = timetable.envelope?.data ?? [];
   const deadlineList = deadlines.envelope?.data ?? [];
@@ -56,6 +67,7 @@ export function OverviewView({
 
   const nextClass = findNextClass(timetableList, attendanceList, new Date(), attendanceTarget);
   const overallAttendance = computeOverallAttendance(attendanceList, attendanceTarget);
+  const attendanceInsights = analyzeAttendanceInsights(attendanceList, timetableList, attendanceTarget);
   const cgpaSummary = resultsData ? computeCgpaSummary(resultsData.semesters) : null;
 
   const openDeadlines = deadlineList.filter((d) => !completedDeadlineIds.has(d.id));
@@ -64,6 +76,10 @@ export function OverviewView({
     .map((s) => ({ subject: s, stats: computeAttendanceStats(s.attended, s.total, attendanceTarget) }))
     .filter((x) => x.stats.status !== 'safe')
     .sort((a, b) => a.stats.percentage - b.stats.percentage);
+
+  const visiblePriorityCourses = showAllPriorities
+    ? attendanceInsights.priorityCourses
+    : attendanceInsights.priorityCourses.slice(0, 3);
 
   const staleErpWarning =
     attendance.envelope?.warning || timetable.envelope?.warning || profile.envelope?.warning;
@@ -237,6 +253,337 @@ export function OverviewView({
             ERP circulars &amp; Moodle LMS
           </p>
         </button>
+      </section>
+
+      {/* Attendance Trends & Prioritization Insights */}
+      <section
+        aria-label="Attendance insights"
+        className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900"
+      >
+        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <TrendingUp className="h-4 w-4 text-blue-700 dark:text-blue-400 shrink-0" aria-hidden="true" />
+              <h3 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
+                Insights
+              </h3>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              {attendance.loading && !attendance.envelope
+                ? 'Analyzing attendance trends and recovery targets...'
+                : attendanceInsights.headline}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
+            {onChangeAttendanceTarget ? (
+              <div
+                role="group"
+                aria-label="Attendance target threshold"
+                className="inline-flex items-center rounded-lg bg-slate-100 dark:bg-slate-800/80 p-0.5 border border-slate-200 dark:border-slate-700/70"
+              >
+                {TARGET_OPTIONS.map((target) => {
+                  const active = attendanceTarget === target;
+                  return (
+                    <button
+                      key={target}
+                      type="button"
+                      onClick={() => onChangeAttendanceTarget(target)}
+                      aria-pressed={active}
+                      className={`px-2.5 py-1 rounded-md font-mono text-xs font-medium tabular-nums transition-colors cursor-pointer whitespace-nowrap ${
+                        active
+                          ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      {target}%
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={() => onNavigate('attendance')}
+              className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              Simulate in Attendance
+            </button>
+          </div>
+        </div>
+
+        {attendance.loading && !attendance.envelope ? (
+          <div className="p-5">
+            <SectionSkeleton rows={3} />
+          </div>
+        ) : attendance.error && !attendance.envelope ? (
+          <div className="p-5">
+            <SectionError
+              sectionName="Insights"
+              message={attendance.error}
+              onRetry={() => onRetrySection('attendance')}
+            />
+          </div>
+        ) : attendanceInsights.priorityCourses.length === 0 ? (
+          <div className="p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                No attendance trends available yet
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {attendanceInsights.summary}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate('sync')}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 px-3.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              Sync LMS &amp; ERP
+            </button>
+          </div>
+        ) : (
+          <div>
+            {/* 3-metric trend analysis strip */}
+            <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-slate-800 border-b border-slate-200 dark:border-slate-800">
+              <div className="px-5 py-4">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                  Target Margin ({attendanceInsights.targetPercent}%)
+                </p>
+                <div className="mt-1.5 flex items-baseline gap-2">
+                  <span
+                    className={`font-mono text-lg font-semibold tabular-nums ${
+                      attendanceInsights.marginFromTarget < 0
+                        ? 'text-red-700 dark:text-red-400'
+                        : attendanceInsights.marginFromTarget < 3
+                          ? 'text-amber-700 dark:text-amber-400'
+                          : 'text-emerald-700 dark:text-emerald-400'
+                    }`}
+                  >
+                    {attendanceInsights.marginFromTarget >= 0 ? '+' : ''}
+                    {attendanceInsights.marginFromTarget.toFixed(1)} pts
+                  </span>
+                  <span className="font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400">
+                    ({attendanceInsights.overallPercentage.toFixed(1)}% overall)
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-600 dark:text-slate-400 font-mono tabular-nums">
+                  {attendanceInsights.distribution.shortageCount} shortage ·{' '}
+                  {attendanceInsights.distribution.borderlineCount} borderline ·{' '}
+                  {attendanceInsights.distribution.safeCount} safe
+                </p>
+              </div>
+
+              <div className="px-5 py-4">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                  {attendanceInsights.oneWeekProjection.horizon === 'week'
+                    ? '1-Week Attendance Trend'
+                    : 'Next-Session Trend'}
+                </p>
+                <div className="mt-1.5 flex items-baseline gap-2">
+                  <span className="font-mono text-lg font-semibold tabular-nums text-slate-900 dark:text-slate-50">
+                    {attendanceInsights.overallPercentage.toFixed(1)}% →{' '}
+                    {attendanceInsights.oneWeekProjection.projectedOverallPercentage.toFixed(1)}%
+                  </span>
+                  <span className="font-mono text-xs font-medium tabular-nums text-emerald-700 dark:text-emerald-400">
+                    {attendanceInsights.oneWeekProjection.deltaPercentage >= 0 ? '+' : ''}
+                    {attendanceInsights.oneWeekProjection.deltaPercentage.toFixed(1)}%
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
+                  {attendanceInsights.oneWeekProjection.coursesRecoveredInOneWeek > 0
+                    ? `${attendanceInsights.oneWeekProjection.coursesRecoveredInOneWeek} shortage ${
+                        attendanceInsights.oneWeekProjection.coursesRecoveredInOneWeek === 1
+                          ? 'course recovers'
+                          : 'courses recover'
+                      } if you attend all scheduled classes`
+                    : attendanceInsights.weeklyScheduledClasses > 0
+                      ? `Projected across ${attendanceInsights.weeklyScheduledClasses} scheduled weekly classes`
+                      : 'Projected if you attend the next class per course'}
+                </p>
+              </div>
+
+              <div className="px-5 py-4">
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                  Recovery vs Buffer
+                </p>
+                <div className="mt-1.5 flex items-baseline gap-2">
+                  {attendanceInsights.totalClassesNeededToRecover > 0 ? (
+                    <span className="font-mono text-lg font-semibold tabular-nums text-red-700 dark:text-red-400">
+                      {attendanceInsights.totalClassesNeededToRecover} needed
+                    </span>
+                  ) : (
+                    <span className="font-mono text-lg font-semibold tabular-nums text-emerald-700 dark:text-emerald-400">
+                      {attendanceInsights.totalSkippableBuffer} skippable
+                    </span>
+                  )}
+                  <span className="text-xs text-slate-500 dark:text-slate-400">
+                    {attendanceInsights.totalClassesNeededToRecover > 0
+                      ? 'consecutive classes'
+                      : 'class buffer'}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-600 dark:text-slate-400 font-mono tabular-nums">
+                  {attendanceInsights.totalClassesNeededToRecover > 0
+                    ? `${attendanceInsights.totalSkippableBuffer} skippable buffer across safe courses`
+                    : `0 recovery classes needed at ${attendanceInsights.targetPercent}% target`}
+                </p>
+              </div>
+            </div>
+
+            {/* Proportional distribution bar + plain-English trend takeaway */}
+            <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/30 space-y-2.5">
+              <div
+                className="h-2 w-full rounded-full overflow-hidden flex bg-slate-200 dark:bg-slate-800"
+                role="img"
+                aria-label={`${attendanceInsights.distribution.safeCount} safe, ${attendanceInsights.distribution.borderlineCount} borderline, ${attendanceInsights.distribution.shortageCount} shortage courses`}
+              >
+                {attendanceInsights.distribution.safeCount > 0 ? (
+                  <div
+                    className="h-full bg-emerald-600 dark:bg-emerald-500 transition-all"
+                    style={{
+                      width: `${
+                        (attendanceInsights.distribution.safeCount /
+                          attendanceInsights.distribution.totalCourses) *
+                        100
+                      }%`,
+                    }}
+                  />
+                ) : null}
+                {attendanceInsights.distribution.borderlineCount > 0 ? (
+                  <div
+                    className="h-full bg-amber-500 dark:bg-amber-400 transition-all"
+                    style={{
+                      width: `${
+                        (attendanceInsights.distribution.borderlineCount /
+                          attendanceInsights.distribution.totalCourses) *
+                        100
+                      }%`,
+                    }}
+                  />
+                ) : null}
+                {attendanceInsights.distribution.shortageCount > 0 ? (
+                  <div
+                    className="h-full bg-red-600 dark:bg-red-500 transition-all"
+                    style={{
+                      width: `${
+                        (attendanceInsights.distribution.shortageCount /
+                          attendanceInsights.distribution.totalCourses) *
+                        100
+                      }%`,
+                    }}
+                  />
+                ) : null}
+              </div>
+              <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                {attendanceInsights.summary}
+              </p>
+            </div>
+
+            {/* Prioritized Courses List */}
+            <div>
+              <div className="px-5 py-2.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Courses to prioritize
+                </p>
+                {attendanceInsights.priorityCourses.length > 3 ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllPriorities((prev) => !prev)}
+                    className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline cursor-pointer whitespace-nowrap"
+                  >
+                    {showAllPriorities
+                      ? 'Show top 3'
+                      : `Show all ${attendanceInsights.priorityCourses.length}`}
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="divide-y divide-slate-200 dark:divide-slate-800">
+                {visiblePriorityCourses.map((item, idx) => {
+                  const priorityLabel =
+                    item.priorityLevel === 'urgent'
+                      ? 'High priority'
+                      : item.priorityLevel === 'watch'
+                        ? 'Watch closely'
+                        : 'On track';
+                  const priorityTone =
+                    item.priorityLevel === 'urgent'
+                      ? 'text-red-700 dark:text-red-400'
+                      : item.priorityLevel === 'watch'
+                        ? 'text-amber-700 dark:text-amber-400'
+                        : 'text-emerald-700 dark:text-emerald-400';
+                  const barTone =
+                    item.priorityLevel === 'urgent'
+                      ? 'bg-red-600 dark:bg-red-500'
+                      : item.priorityLevel === 'watch'
+                        ? 'bg-amber-500 dark:bg-amber-400'
+                        : 'bg-emerald-600 dark:bg-emerald-500';
+
+                  return (
+                    <div
+                      key={item.subject.courseCode}
+                      className="px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/70 dark:hover:bg-slate-800/30 transition-colors"
+                    >
+                      <div className="flex items-start gap-3.5 min-w-0 flex-1">
+                        <span className="font-mono text-xs font-semibold tabular-nums text-slate-400 dark:text-slate-500 pt-0.5 shrink-0">
+                          {String(idx + 1).padStart(2, '0')}
+                        </span>
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                            <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                              {item.subject.courseName}
+                            </p>
+                            <span className="text-slate-300 dark:text-slate-700" aria-hidden="true">
+                              ·
+                            </span>
+                            <span className={`text-xs font-medium ${priorityTone}`}>
+                              {priorityLabel}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+                            {item.subject.courseCode} · {item.subject.attended}/{item.subject.total} classes
+                            {item.weeklySessions > 0 ? ` · ${item.weeklySessions}/wk` : ''}
+                          </p>
+                          <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                            {item.recommendation}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="sm:w-48 shrink-0 space-y-1.5 pl-7 sm:pl-0">
+                        <div className="flex items-baseline justify-between gap-2 font-mono tabular-nums">
+                          <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                            {item.stats.percentage.toFixed(1)}%
+                          </span>
+                          <span className={`text-xs font-medium ${priorityTone}`}>
+                            {item.gapFromTarget >= 0 ? '+' : ''}
+                            {item.gapFromTarget.toFixed(1)}% vs {attendanceInsights.targetPercent}%
+                          </span>
+                        </div>
+                        <div
+                          className="relative h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-800"
+                          aria-hidden="true"
+                        >
+                          <div
+                            className={`h-full rounded-full transition-all ${barTone}`}
+                            style={{ width: `${Math.min(100, Math.max(0, item.stats.percentage))}%` }}
+                          />
+                          <div
+                            className="absolute -top-0.5 h-2.5 w-0.5 bg-slate-700 dark:bg-slate-200"
+                            style={{ left: `${attendanceInsights.targetPercent}%` }}
+                            title={`${attendanceInsights.targetPercent}% target`}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Two balanced detail columns below */}

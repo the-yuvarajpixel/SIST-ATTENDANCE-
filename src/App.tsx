@@ -6,6 +6,7 @@ import { DeadlinesView } from './components/DeadlinesView';
 import { LiveLoginGuideView } from './components/LiveLoginGuideView';
 import { NotificationsView } from './components/NotificationsView';
 import { OverviewView, type SectionState } from './components/OverviewView';
+import { PortalSyncView } from './components/PortalSyncView';
 import { ResultsView } from './components/ResultsView';
 import { SetupHealthView } from './components/SetupHealthView';
 import { Sidebar } from './components/Sidebar';
@@ -18,6 +19,7 @@ import type {
   DeadlineItem,
   NavSection,
   NotificationItem,
+  PortalSyncReport,
   ResultsPayload,
   SectionEnvelope,
   SessionUser,
@@ -81,6 +83,7 @@ function getInitialSection(): NavSection {
   if (typeof window !== 'undefined') {
     if (window.location.pathname === '/setup') return 'setup';
     if (window.location.pathname === '/live-guide') return 'live-guide';
+    if (window.location.pathname === '/sync') return 'sync';
   }
   return 'overview';
 }
@@ -98,6 +101,8 @@ export default function App() {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [signInInitialMode, setSignInInitialMode] = useState<'mock' | 'live' | undefined>(undefined);
   const [erpOutageSimulated, setErpOutageSimulated] = useState(false);
+  const [syncingPortals, setSyncingPortals] = useState(false);
+  const [lastSyncReport, setLastSyncReport] = useState<PortalSyncReport | null>(null);
 
   const [attendanceTarget, setAttendanceTarget] = useState<number>(getInitialTarget);
   const [completedDeadlineIds, setCompletedDeadlineIds] = useState<Set<string>>(() =>
@@ -257,6 +262,7 @@ export default function App() {
       setResults(emptySection());
       setDeadlines(emptySection());
       setNotifications(emptySection());
+      setLastSyncReport(null);
       setPaletteOpen(false);
       setMobileMenuOpen(false);
     }
@@ -296,6 +302,33 @@ export default function App() {
       const res = await api.setErpOutageSimulation(next);
       setErpOutageSimulated(res.erpOutageSimulated);
       loadAllSections(true);
+    },
+    [loadAllSections]
+  );
+
+  const handleSyncPortals = useCallback(async () => {
+    setSyncingPortals(true);
+    try {
+      const report = await api.syncPortals();
+      setLastSyncReport(report);
+      // Reload all sections from the freshly populated cache
+      loadAllSections(false);
+    } finally {
+      setSyncingPortals(false);
+    }
+  }, [loadAllSections]);
+
+  const handlePortalsConnected = useCallback(
+    async (nextUser: SessionUser) => {
+      setUser(nextUser);
+      setSyncingPortals(true);
+      try {
+        const report = await api.syncPortals();
+        setLastSyncReport(report);
+        loadAllSections(false);
+      } finally {
+        setSyncingPortals(false);
+      }
     },
     [loadAllSections]
   );
@@ -391,9 +424,10 @@ export default function App() {
         <TopBar
           activeSection={activeSection}
           theme={theme}
-          refreshing={anyLoading}
+          refreshing={anyLoading || syncingPortals}
           onToggleTheme={handleToggleTheme}
           onOpenCommandPalette={() => setPaletteOpen(true)}
+          onOpenSync={() => setActiveSection('sync')}
           onRefreshAll={() => loadAllSections(true)}
           onOpenMobileMenu={() => setMobileMenuOpen(true)}
         />
@@ -411,6 +445,7 @@ export default function App() {
                 completedDeadlineIds={completedDeadlineIds}
                 readNotificationIds={readNotificationIds}
                 attendanceTarget={attendanceTarget}
+                onChangeAttendanceTarget={setAttendanceTarget}
                 onNavigate={setActiveSection}
                 onRetrySection={(sec) => void loadSection(sec, true)}
               />
@@ -460,6 +495,24 @@ export default function App() {
                 onToggleRead={handleToggleReadNotification}
                 onMarkAllRead={handleMarkAllRead}
                 onRetry={() => void loadSection('notifications', true)}
+              />
+            ) : null}
+
+            {activeSection === 'sync' ? (
+              <PortalSyncView
+                user={user}
+                profile={profile}
+                attendance={attendance}
+                timetable={timetable}
+                results={results}
+                deadlines={deadlines}
+                notifications={notifications}
+                syncing={syncingPortals}
+                lastReport={lastSyncReport}
+                onRunSync={handleSyncPortals}
+                onPortalsConnected={handlePortalsConnected}
+                onRetrySection={(sec) => void loadSection(sec, true)}
+                onNavigate={setActiveSection}
               />
             ) : null}
 

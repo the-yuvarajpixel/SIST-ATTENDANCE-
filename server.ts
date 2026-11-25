@@ -11,8 +11,17 @@ import {
   validateResults,
   validateTimetable,
 } from './src/core/schemas';
-import type { DataSourceMode, HealthCheckItem, HealthReport, SectionEnvelope } from './src/core/types';
+import type {
+  DataOrigin,
+  DataSourceMode,
+  HealthCheckItem,
+  HealthReport,
+  PortalSyncReport,
+  PortalSyncSectionResult,
+  SectionEnvelope,
+} from './src/core/types';
 import {
+  exchangeErpCredentialsForToken,
   exchangeMoodleCredentialsForToken,
   fetchLiveAttendance,
   fetchLiveDeadlines,
@@ -287,7 +296,11 @@ export function createApp() {
       return;
     }
     const mode: DataSourceMode = body.mode === 'live' ? 'live' : 'mock';
-    const erpToken = typeof body.erpToken === 'string' ? body.erpToken.trim() : '';
+    let erpToken = typeof body.erpToken === 'string' ? body.erpToken.trim() : '';
+    const erpUsername = typeof body.erpUsername === 'string' ? body.erpUsername.trim() : '';
+    const erpPassword = typeof body.erpPassword === 'string' ? body.erpPassword : '';
+    const usingErpCreds = Boolean(erpUsername || erpPassword);
+
     let lmsToken = typeof body.lmsToken === 'string' ? body.lmsToken.trim() : '';
     const lmsUsername = typeof body.lmsUsername === 'string' ? body.lmsUsername.trim() : '';
     const lmsPassword = typeof body.lmsPassword === 'string' ? body.lmsPassword : '';
@@ -301,10 +314,28 @@ export function createApp() {
     }
 
     if (mode === 'live') {
+      if (!usingErpCreds && !usingMoodleCreds && !erpToken && !lmsToken) {
+        fieldErrors.lmsPassword =
+          'Enter your ERP and/or Moodle LMS username and password, or switch to Paste Tokens.';
+      }
+      if (usingErpCreds) {
+        const effectiveErpUser = erpUsername || registerNumber;
+        if (!effectiveErpUser) {
+          fieldErrors.erpUsername = 'Enter your College ERP username or register number.';
+        } else if (effectiveErpUser.length > 150) {
+          fieldErrors.erpUsername = 'ERP username is too long.';
+        }
+        if (!erpPassword) {
+          fieldErrors.erpPassword = 'Enter your College ERP password.';
+        } else if (erpPassword.length > 256) {
+          fieldErrors.erpPassword = 'Password exceeds maximum allowed length.';
+        }
+      }
       if (usingMoodleCreds) {
-        if (!lmsUsername) {
+        const effectiveLmsUser = lmsUsername || registerNumber;
+        if (!effectiveLmsUser) {
           fieldErrors.lmsUsername = 'Enter your Moodle LMS username or register number.';
-        } else if (lmsUsername.length > 150) {
+        } else if (effectiveLmsUser.length > 150) {
           fieldErrors.lmsUsername = 'Moodle username is too long.';
         }
         if (!lmsPassword) {
@@ -312,8 +343,6 @@ export function createApp() {
         } else if (lmsPassword.length > 256) {
           fieldErrors.lmsPassword = 'Password exceeds maximum allowed length.';
         }
-      } else if (!erpToken && !lmsToken) {
-        fieldErrors.lmsToken = 'Sign in with Moodle credentials, or paste a Moodle LMS or ERP token.';
       }
       if (erpToken && (erpToken.length < 8 || erpToken.length > MAX_TOKEN_LENGTH)) {
         fieldErrors.erpToken = `ERP session token must be 8–${MAX_TOKEN_LENGTH} characters.`;
@@ -332,17 +361,26 @@ export function createApp() {
       try {
         let verifiedMoodleInfo: { userid: number; fullname: string } | null = null;
         let verifiedErpName: string | null = null;
+        let erpExchangedFromLogin = false;
 
         if (!lmsToken && usingMoodleCreds) {
-          // Exchange Moodle username/password for a web-service token; password is never persisted.
-          lmsToken = await exchangeMoodleCredentialsForToken(lmsUsername, lmsPassword);
+          // Exchange Moodle username/password once for a web-service token; password is never persisted.
+          lmsToken = await exchangeMoodleCredentialsForToken(lmsUsername || registerNumber, lmsPassword);
+        }
+
+        if (!erpToken && usingErpCreds) {
+          // Exchange ERP username/password once for an access token; password is never persisted.
+          const erpAuth = await exchangeErpCredentialsForToken(erpUsername || registerNumber, erpPassword);
+          erpToken = erpAuth.token;
+          verifiedErpName = erpAuth.studentName ?? null;
+          erpExchangedFromLogin = true;
         }
 
         if (lmsToken) {
           const siteInfo = await verifyMoodleToken(lmsToken);
           verifiedMoodleInfo = { userid: siteInfo.userid, fullname: siteInfo.fullname };
         }
-        if (erpToken) {
+        if (erpToken && !erpExchangedFromLogin) {
           const erpProfile = await verifyErpToken(
             erpToken,
             registerNumber.toUpperCase(),
@@ -408,6 +446,353 @@ export function createApp() {
     }
     clearSessionCookie(req, res);
     res.json({ ok: true });
+  });
+
+  // Connect or update live Moodle LMS and/or College ERP credentials in-place without losing the other portal
+  app.post('/api/auth/connect', async (req, res) => {
+    const ip = req.ip || 'local';
+    if (!checkLoginRateLimit(ip)) {
+      res.status(429).json({ error: 'Too many connection attempts. Please wait a minute and try again.' });
+      return;
+    }
+
+    const session = resolveActiveSession(req, res);
+    if (!session) {
+      res.status(401).json({ error: 'Sign in required.' });
+      return;
+    }
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const nextRegRaw =
+      typeof body.registerNumber === 'string' && body.registerNumber.trim()
+        ? body.registerNumber.trim()
+        : session.registerNumber;
+    let incomingErpToken = typeof body.erpToken === 'string' ? body.erpToken.trim() : '';
+    const erpUsername = typeof body.erpUsername === 'string' ? body.erpUsername.trim() : '';
+    const erpPassword = typeof body.erpPassword === 'string' ? body.erpPassword : '';
+    const usingErpCreds = Boolean(erpUsername || erpPassword);
+
+    let incomingLmsToken = typeof body.lmsToken === 'string' ? body.lmsToken.trim() : '';
+    const lmsUsername = typeof body.lmsUsername === 'string' ? body.lmsUsername.trim() : '';
+    const lmsPassword = typeof body.lmsPassword === 'string' ? body.lmsPassword : '';
+    const usingMoodleCreds = Boolean(lmsUsername || lmsPassword);
+
+    const fieldErrors: Record<string, string> = {};
+    if (!/^[A-Za-z0-9]{6,14}$/.test(nextRegRaw)) {
+      fieldErrors.registerNumber = 'Register number must be 6–14 letters or digits without spaces.';
+    }
+    if (!incomingErpToken && !usingErpCreds && !incomingLmsToken && !usingMoodleCreds) {
+      fieldErrors.lmsToken = 'Provide Moodle LMS or College ERP credentials/tokens to connect.';
+    }
+    if (usingErpCreds) {
+      const effectiveErpUser = erpUsername || nextRegRaw;
+      if (!effectiveErpUser || effectiveErpUser.length > 150) {
+        fieldErrors.erpUsername = 'Enter a valid College ERP username or register number.';
+      }
+      if (!erpPassword) {
+        fieldErrors.erpPassword = 'Enter your College ERP password.';
+      } else if (erpPassword.length > 256) {
+        fieldErrors.erpPassword = 'Password exceeds maximum allowed length.';
+      }
+    }
+    if (usingMoodleCreds) {
+      const effectiveUser = lmsUsername || nextRegRaw;
+      if (!effectiveUser || effectiveUser.length > 150) {
+        fieldErrors.lmsUsername = 'Enter a valid Moodle LMS username or register number.';
+      }
+      if (!lmsPassword) {
+        fieldErrors.lmsPassword = 'Enter your Moodle LMS password.';
+      } else if (lmsPassword.length > 256) {
+        fieldErrors.lmsPassword = 'Password exceeds maximum allowed length.';
+      }
+    }
+    if (incomingErpToken && (incomingErpToken.length < 8 || incomingErpToken.length > MAX_TOKEN_LENGTH)) {
+      fieldErrors.erpToken = `ERP session token must be 8–${MAX_TOKEN_LENGTH} characters.`;
+    }
+    if (incomingLmsToken && (incomingLmsToken.length < 8 || incomingLmsToken.length > MAX_TOKEN_LENGTH)) {
+      fieldErrors.lmsToken = `Moodle LMS token must be 8–${MAX_TOKEN_LENGTH} characters.`;
+    }
+
+    if (Object.keys(fieldErrors).length > 0) {
+      res.status(400).json({ error: 'Please fix the highlighted fields.', fieldErrors });
+      return;
+    }
+
+    try {
+      const nextRegisterNumber = nextRegRaw.toUpperCase();
+      let verifiedMoodleInfo: { userid: number; fullname: string } | null = null;
+      let verifiedErpName: string | null = null;
+      let erpExchangedFromLogin = false;
+
+      if (!incomingLmsToken && usingMoodleCreds) {
+        incomingLmsToken = await exchangeMoodleCredentialsForToken(lmsUsername || nextRegisterNumber, lmsPassword);
+      }
+
+      if (!incomingErpToken && usingErpCreds) {
+        const erpAuth = await exchangeErpCredentialsForToken(erpUsername || nextRegisterNumber, erpPassword);
+        incomingErpToken = erpAuth.token;
+        verifiedErpName = erpAuth.studentName ?? null;
+        erpExchangedFromLogin = true;
+      }
+
+      if (incomingLmsToken) {
+        const siteInfo = await verifyMoodleToken(incomingLmsToken);
+        verifiedMoodleInfo = { userid: siteInfo.userid, fullname: siteInfo.fullname };
+      }
+
+      const existingLiveLms = session.mode === 'live' ? session.lmsToken : undefined;
+      const existingLiveErp = session.mode === 'live' ? session.erpToken : undefined;
+      const finalLmsToken = incomingLmsToken || existingLiveLms;
+      const finalErpToken = incomingErpToken || existingLiveErp;
+
+      if (incomingErpToken && !erpExchangedFromLogin) {
+        const erpProfile = await verifyErpToken(
+          incomingErpToken,
+          nextRegisterNumber,
+          verifiedMoodleInfo?.fullname || (session.mode === 'live' ? session.name : undefined),
+          Boolean(finalLmsToken)
+        );
+        verifiedErpName = erpProfile.name;
+      }
+
+      const oldUserHash = TwoTierCache.hashUserKey(
+        JSON.stringify([session.registerNumber, session.name, session.exp])
+      );
+      cache.clearUser(oldUserHash);
+
+      const resolvedName = (
+        verifiedErpName ||
+        verifiedMoodleInfo?.fullname ||
+        (session.mode === 'live' ? session.name : nextRegisterNumber)
+      ).slice(0, 100);
+
+      const stored = writeSessionCookie(req, res, {
+        registerNumber: nextRegisterNumber,
+        name: resolvedName,
+        mode: 'live',
+        erpToken: finalErpToken || undefined,
+        lmsToken: finalLmsToken || undefined,
+        lmsUserId: verifiedMoodleInfo?.userid ?? (session.mode === 'live' ? session.lmsUserId : undefined),
+      });
+
+      res.json({ authenticated: true, user: toPublicUser(stored) });
+    } catch (err) {
+      if (err instanceof LiveUpstreamError) {
+        res.status(err.status).json({
+          error: err.message,
+          fieldErrors: err.field ? { [err.field]: err.message } : undefined,
+        });
+        return;
+      }
+      const message = err instanceof Error ? err.message : 'Unable to connect portal credentials.';
+      res.status(502).json({ error: message });
+    }
+  });
+
+  // Unified sync across both Moodle LMS and College ERP (refreshes all 6 sections in parallel)
+  app.post('/api/portal/sync', async (req, res) => {
+    const session = resolveActiveSession(req, res);
+    if (!session) {
+      res.status(401).json({ error: 'Sign in required.' });
+      return;
+    }
+
+    const userHash = TwoTierCache.hashUserKey(
+      JSON.stringify([session.registerNumber, session.name, session.exp])
+    );
+    const liveConfig = getLiveAdapterConfig();
+    const lmsHost = liveConfig.lmsHost ?? 'sathyabama.cognibot.in';
+    const erpHost = liveConfig.erpHost ?? 'erp.sathyabama.ac.in';
+
+    type SectionSpec<T> = {
+      section: PortalSyncSectionResult['section'];
+      label: string;
+      source: DataOrigin;
+      usesErp: boolean;
+      mockLoader: (s: StoredSession) => T;
+      liveLoader: (s: StoredSession) => Promise<T>;
+      validator: (raw: unknown) => T;
+      count: (data: T) => number;
+    };
+
+    const specs: SectionSpec<unknown>[] = [
+      {
+        section: 'profile',
+        label: 'Student Profile',
+        source: session.mode === 'live' && !session.erpToken && session.lmsToken ? 'LMS' : 'ERP',
+        usesErp: true,
+        mockLoader: (s) => buildMockProfile(s.registerNumber, s.name),
+        liveLoader: (s) => fetchLiveProfile(s),
+        validator: validateProfile,
+        count: () => 1,
+      },
+      {
+        section: 'attendance',
+        label: 'Attendance',
+        source: 'ERP',
+        usesErp: true,
+        mockLoader: () => buildMockAttendance(),
+        liveLoader: (s) => fetchLiveAttendance(s),
+        validator: validateAttendance,
+        count: (d) => (Array.isArray(d) ? d.length : 0),
+      },
+      {
+        section: 'timetable',
+        label: 'Timetable',
+        source: 'ERP',
+        usesErp: true,
+        mockLoader: () => buildMockTimetable(),
+        liveLoader: (s) => fetchLiveTimetable(s),
+        validator: validateTimetable,
+        count: (d) => (Array.isArray(d) ? d.length : 0),
+      },
+      {
+        section: 'results',
+        label: 'Results & CGPA',
+        source: 'ERP',
+        usesErp: true,
+        mockLoader: () => buildMockResults(),
+        liveLoader: (s) => fetchLiveResults(s),
+        validator: validateResults,
+        count: (d) =>
+          typeof d === 'object' && d !== null && Array.isArray((d as { semesters?: unknown[] }).semesters)
+            ? (d as { semesters: unknown[] }).semesters.length
+            : 0,
+      },
+      {
+        section: 'deadlines',
+        label: 'Deadlines',
+        source:
+          session.mode === 'live'
+            ? session.erpToken && session.lmsToken
+              ? 'ERP + LMS'
+              : session.lmsToken
+                ? 'LMS'
+                : 'ERP'
+            : 'ERP + LMS',
+        usesErp: false,
+        mockLoader: () => buildMockDeadlines().items,
+        liveLoader: (s) => fetchLiveDeadlines(s),
+        validator: validateDeadlines,
+        count: (d) => (Array.isArray(d) ? d.length : 0),
+      },
+      {
+        section: 'notifications',
+        label: 'Notifications',
+        source:
+          session.mode === 'live'
+            ? session.erpToken && session.lmsToken
+              ? 'ERP + LMS'
+              : session.lmsToken
+                ? 'LMS'
+                : 'ERP'
+            : 'ERP + LMS',
+        usesErp: false,
+        mockLoader: () => buildMockNotifications(),
+        liveLoader: (s) => fetchLiveNotifications(s),
+        validator: validateNotifications,
+        count: (d) => (Array.isArray(d) ? d.length : 0),
+      },
+    ];
+
+    const lmsStart = Date.now();
+    const erpStart = Date.now();
+
+    const sectionResults = await Promise.all(
+      specs.map(async (spec): Promise<PortalSyncSectionResult> => {
+        try {
+          const result = await cache.getOrFetch(
+            userHash,
+            spec.section,
+            CACHE_TTL_MS,
+            async () => {
+              if (spec.usesErp && simulatedErpOutage.has(userHash)) {
+                throw new Error('ERP portal did not respond within 5s');
+              }
+              const raw = session.mode === 'live' ? await spec.liveLoader(session) : spec.mockLoader(session);
+              return spec.validator(raw);
+            },
+            { forceRefresh: true }
+          );
+          const itemCount = spec.count(result.data);
+          return {
+            section: spec.section,
+            label: spec.label,
+            source: spec.source,
+            status: result.stale ? 'stale' : 'synced',
+            itemCount,
+            fetchedAt: result.fetchedAt,
+            message: result.warning
+              ? result.warning
+              : session.mode === 'live'
+                ? `Synced live from ${spec.source}`
+                : `Refreshed sample ${spec.source} data`,
+          };
+        } catch (err) {
+          return {
+            section: spec.section,
+            label: spec.label,
+            source: spec.source,
+            status: 'error',
+            itemCount: 0,
+            fetchedAt: null,
+            message: err instanceof Error ? err.message : `Unable to sync ${spec.label}.`,
+          };
+        }
+      })
+    );
+
+    const lmsLatencyMs = Date.now() - lmsStart;
+    const erpLatencyMs = Date.now() - erpStart;
+
+    const lmsSections = sectionResults.filter((s) => s.source === 'LMS' || s.source === 'ERP + LMS');
+    const erpSections = sectionResults.filter((s) => s.source === 'ERP' || s.source === 'ERP + LMS');
+
+    const moodleConnected = session.mode === 'live' ? Boolean(session.lmsToken) : true;
+    const erpConnected = session.mode === 'live' ? Boolean(session.erpToken) : true;
+
+    const moodleHasSynced = lmsSections.some((s) => s.status === 'synced');
+    const erpHasSynced = erpSections.some((s) => s.status === 'synced');
+    const erpFirstError = erpSections.find((s) => s.status === 'error' || s.status === 'stale');
+    const lmsFirstError = lmsSections.find((s) => s.status === 'error' || s.status === 'stale');
+
+    const report: PortalSyncReport = {
+      syncedAt: new Date().toISOString(),
+      mode: session.mode,
+      moodle: {
+        connected: moodleConnected,
+        host: lmsHost,
+        status: !moodleConnected ? 'disconnected' : moodleHasSynced ? 'synced' : 'error',
+        message:
+          session.mode === 'mock'
+            ? 'Sample Moodle LMS data refreshed. Connect your Sathyabama Moodle account below for live sync.'
+            : !moodleConnected
+              ? 'Not connected yet. Sign in with your Moodle LMS credentials or web-service token below.'
+              : moodleHasSynced
+                ? `Synced Moodle LMS deadlines & notifications from ${lmsHost}.`
+                : lmsFirstError?.message ?? `Unable to sync Moodle LMS (${lmsHost}).`,
+        latencyMs: lmsLatencyMs,
+      },
+      erp: {
+        connected: erpConnected,
+        host: erpHost,
+        status: !erpConnected ? 'disconnected' : erpHasSynced && !simulatedErpOutage.has(userHash) ? 'synced' : 'error',
+        message:
+          session.mode === 'mock'
+            ? simulatedErpOutage.has(userHash)
+              ? 'Simulated ERP outage is active — ERP sections fell back to cached copy.'
+              : 'Sample College ERP data refreshed. Paste your ERP Access-Token below for live sync.'
+            : !erpConnected
+              ? 'Not connected yet. Paste your ERP Access-Token from erp.sathyabama.ac.in to sync attendance, timetable, and CGPA.'
+              : erpHasSynced && !simulatedErpOutage.has(userHash)
+                ? `Synced attendance, timetable, and results from ${erpHost}.`
+                : erpFirstError?.message ?? `Unable to sync College ERP (${erpHost}).`,
+        latencyMs: erpLatencyMs,
+      },
+      sections: sectionResults,
+    };
+
+    res.json(report);
   });
 
   // Resilience toggle: simulate ERP outage so user can verify stale-while-error fallback

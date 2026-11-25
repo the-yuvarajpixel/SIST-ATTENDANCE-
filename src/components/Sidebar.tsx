@@ -7,6 +7,7 @@ import {
   GraduationCap,
   LayoutDashboard,
   LogOut,
+  RefreshCw,
   TrendingUp,
   X,
 } from 'lucide-react';
@@ -32,6 +33,7 @@ const NAV_ITEMS: { id: NavSection; label: string; icon: typeof LayoutDashboard }
   { id: 'results', label: 'Results & CGPA', icon: TrendingUp },
   { id: 'deadlines', label: 'Deadlines', icon: GraduationCap },
   { id: 'notifications', label: 'Notifications', icon: Bell },
+  { id: 'sync', label: 'Sync LMS & ERP', icon: RefreshCw },
   { id: 'live-guide', label: 'Live Login Guide', icon: BookOpen },
   { id: 'setup', label: 'Setup & Health', icon: Activity },
 ];
@@ -78,6 +80,18 @@ export function Sidebar({
           let countHint: string | null = null;
           if (item.id === 'notifications' && unreadCount > 0) countHint = String(unreadCount);
           if (item.id === 'attendance' && shortageCount > 0) countHint = `${shortageCount} low`;
+          if (item.id === 'sync') {
+            if (user.mode === 'live') {
+              countHint =
+                user.erpTokenPresent && user.lmsTokenPresent
+                  ? 'Both'
+                  : user.lmsTokenPresent
+                    ? 'LMS'
+                    : 'ERP';
+            } else {
+              countHint = 'Sample';
+            }
+          }
           if (item.id === 'setup' && erpDegraded) countHint = 'Cached';
 
           return (
