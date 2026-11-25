@@ -222,6 +222,8 @@ test('Sathyabama ERP v1.0 POST sync parses profile, attendance, timetable, resul
       });
     }
     if (url.endsWith('/erp/api/v1.0/StudentAttendanceHourly/getStudentAcademicHourwise')) {
+      const sentBody = JSON.parse(String(init?.body ?? '{}'));
+      assert.match(String(sentBody.ToDate ?? ''), /^\d{4}-\d{2}-\d{2}$/);
       return jsonResponse({
         status: 1,
         responseData: [
@@ -232,6 +234,7 @@ test('Sathyabama ERP v1.0 POST sync parses profile, attendance, timetable, resul
             TotalPresent: 34,
             TotalAbsent: 6,
             Percentage: '85.00',
+            UpdatedDate: '2099-12-31T00:00:00.000Z',
           },
         ],
       });
@@ -282,6 +285,24 @@ test('Sathyabama ERP v1.0 POST sync parses profile, attendance, timetable, resul
         },
       });
     }
+    if (url.endsWith('/erp/api/v1.0/CAEResult/studentCAEResult')) {
+      return jsonResponse({
+        status: 1,
+        responseData: {
+          CAEResult: [
+            {
+              SubjectCode: 'SCS1302',
+              SubjectName: '<b>Computer Networks</b>',
+              Credit: 4,
+              CAE1: 45,
+              CAE2: 43,
+              AssignmentMark: 9,
+              Remarks: '<script>alert(1)</script>Consistent performance',
+            },
+          ],
+        },
+      });
+    }
     if (url.endsWith('/erp/api/v1.0/EventCalendar/listStudent')) {
       return jsonResponse({
         status: 1,
@@ -325,11 +346,20 @@ test('Sathyabama ERP v1.0 POST sync parses profile, attendance, timetable, resul
   assert.equal(attendance[0].courseCode, 'SCS1302');
   assert.equal(attendance[0].attended, 34);
   assert.equal(attendance[0].total, 40);
+  assert.ok(Date.parse(attendance[0].lastUpdated) <= Date.now() + 1000);
   assert.equal(timetable.length, 1);
   assert.equal(timetable[0].day, 'Mon');
   assert.equal(timetable[0].startTime, '09:00');
   assert.equal(results.semesters.length, 1);
   assert.equal(results.semesters[0].courses[0].grade, 'O');
+  assert.equal(results.caeMarks?.length, 1);
+  assert.equal(results.caeMarks?.[0].courseCode, 'SCS1302');
+  assert.equal(results.caeMarks?.[0].courseName, 'Computer Networks');
+  assert.equal(results.caeMarks?.[0].cae1, 45);
+  assert.equal(results.caeMarks?.[0].cae2, 43);
+  assert.equal(results.caeMarks?.[0].internalTotal, 44.2);
+  assert.equal(results.caeMarks?.[0].standing, 'strong');
+  assert.equal(results.caeMarks?.[0].remarks, 'Consistent performance');
   assert.equal(deadlines.length, 1);
   assert.equal(deadlines[0].kind, 'exam');
   assert.equal(notifications.length, 1);

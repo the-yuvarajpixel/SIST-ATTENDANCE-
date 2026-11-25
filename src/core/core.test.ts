@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   analyzeAttendanceInsights,
+  clampAttendanceDateToToday,
   computeAttendanceStats,
   computeOverallAttendance,
+  getLatestAttendanceDate,
   simulateAttendance,
 } from './attendance';
 import {
@@ -69,6 +71,26 @@ test('overall attendance aggregates across subjects', () => {
   assert.equal(overall.overallPercentage, 78.1);
   assert.equal(overall.shortageCount, 1);
   assert.equal(overall.safeCount, 1);
+});
+
+test('latest attendance date strictly caps future-dated entries to today', () => {
+  const fixedNow = new Date(2026, 10, 25, 11, 0, 0); // 25 Nov 2026
+  const clampedFuture = clampAttendanceDateToToday('2026-12-10', fixedNow);
+  assert.equal(clampedFuture.wasFuture, true);
+  assert.equal(clampedFuture.dateKey, '2026-11-25');
+
+  const clampedPast = clampAttendanceDateToToday('2026-11-23', fixedNow);
+  assert.equal(clampedPast.wasFuture, false);
+  assert.equal(clampedPast.dateKey, '2026-11-23');
+
+  const subjects: AttendanceSubject[] = [
+    { courseCode: 'CS1', courseName: 'CN', faculty: 'A', credits: 4, attended: 30, total: 34, lastUpdated: '2026-11-22' },
+    { courseCode: 'CS2', courseName: 'CD', faculty: 'B', credits: 4, attended: 20, total: 30, lastUpdated: '2026-12-05' },
+  ];
+  const latest = getLatestAttendanceDate(subjects, fixedNow);
+  assert.equal(latest.latestDateKey, '2026-11-25');
+  assert.equal(latest.cappedToToday, true);
+  assert.match(latest.formattedDate ?? '', /25.*Nov.*2026/);
 });
 
 test('attendance insights ranks priority courses and projects weekly recovery against target', () => {

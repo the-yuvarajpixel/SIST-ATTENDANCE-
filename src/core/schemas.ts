@@ -1,5 +1,6 @@
 import type {
   AttendanceSubject,
+  CaeStanding,
   CourseGrade,
   DeadlineItem,
   GradeLetter,
@@ -8,6 +9,7 @@ import type {
   ResultsPayload,
   SemesterResult,
   StudentProfile,
+  SubjectCaeMark,
   TimetableSlot,
   Weekday,
 } from './types';
@@ -23,6 +25,7 @@ export class SchemaValidationError extends Error {
 
 const VALID_DAYS = new Set<Weekday>(['Mon', 'Tue', 'Wed', 'Thu', 'Fri']);
 const VALID_GRADES = new Set<GradeLetter>(['O', 'A+', 'A', 'B+', 'B', 'C', 'RA']);
+const VALID_CAE_STANDINGS = new Set<CaeStanding>(['strong', 'on-track', 'needs-improvement', 'pending']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -203,8 +206,88 @@ export function validateResults(input: unknown): ResultsPayload {
   });
 
   const currentSemester = assertFiniteNumber(input.currentSemester, 'currentSemester', issues, 1, 12);
+
+  let caeMarks: SubjectCaeMark[] = [];
+  if (input.caeMarks !== undefined) {
+    if (!Array.isArray(input.caeMarks)) {
+      issues.push('caeMarks must be an array when provided');
+    } else {
+      caeMarks = input.caeMarks.map((item, idx) => {
+        if (!isRecord(item)) {
+          issues.push(`caeMarks[${idx}] invalid`);
+          return {
+            courseCode: '',
+            courseName: '',
+            credits: 0,
+            cae1: null,
+            cae1Max: 50,
+            cae2: null,
+            cae2Max: 50,
+            internalBonus: null,
+            internalBonusMax: 10,
+            internalTotal: 0,
+            internalMax: 50,
+            standing: 'pending',
+          };
+        }
+        const cae1Max = assertFiniteNumber(item.cae1Max ?? 50, `caeMarks[${idx}].cae1Max`, issues, 1, 200);
+        const cae2Max = assertFiniteNumber(item.cae2Max ?? 50, `caeMarks[${idx}].cae2Max`, issues, 1, 200);
+        const internalBonusMax = assertFiniteNumber(
+          item.internalBonusMax ?? 10,
+          `caeMarks[${idx}].internalBonusMax`,
+          issues,
+          0,
+          100
+        );
+        const internalMax = assertFiniteNumber(item.internalMax ?? 50, `caeMarks[${idx}].internalMax`, issues, 1, 200);
+        const cae1 =
+          item.cae1 === null || item.cae1 === undefined
+            ? null
+            : assertFiniteNumber(item.cae1, `caeMarks[${idx}].cae1`, issues, 0, cae1Max);
+        const cae2 =
+          item.cae2 === null || item.cae2 === undefined
+            ? null
+            : assertFiniteNumber(item.cae2, `caeMarks[${idx}].cae2`, issues, 0, cae2Max);
+        const internalBonus =
+          item.internalBonus === null || item.internalBonus === undefined
+            ? null
+            : assertFiniteNumber(
+                item.internalBonus,
+                `caeMarks[${idx}].internalBonus`,
+                issues,
+                0,
+                Math.max(internalBonusMax, 100)
+              );
+        const internalTotal = assertFiniteNumber(
+          item.internalTotal,
+          `caeMarks[${idx}].internalTotal`,
+          issues,
+          0,
+          internalMax
+        );
+        const rawStanding = item.standing as CaeStanding;
+        const standing: CaeStanding = VALID_CAE_STANDINGS.has(rawStanding) ? rawStanding : 'pending';
+        return {
+          courseCode: assertNonEmptyString(item.courseCode, `caeMarks[${idx}].courseCode`, issues),
+          courseName: assertNonEmptyString(item.courseName, `caeMarks[${idx}].courseName`, issues),
+          credits: assertFiniteNumber(item.credits, `caeMarks[${idx}].credits`, issues, 0, 12),
+          cae1,
+          cae1Max,
+          cae2,
+          cae2Max,
+          internalBonus,
+          internalBonusMax,
+          internalTotal,
+          internalMax,
+          standing,
+          remarks: typeof item.remarks === 'string' && item.remarks.trim() ? item.remarks.trim() : undefined,
+        };
+      });
+    }
+  }
+
   if (issues.length > 0) throw new SchemaValidationError('results', issues);
-  return { semesters, currentSemester, currentCourses };
+  return { semesters, currentSemester, currentCourses, caeMarks };
 }
 
 export function validateDeadlines(input: unknown): DeadlineItem[] {

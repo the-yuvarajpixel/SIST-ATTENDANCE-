@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowRight,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -29,12 +30,13 @@ import {
   type CgpaTrajectoryPoint,
   type SimulatedFutureSemester,
 } from '../core/gpa';
-import type { GradeLetter, PlannedCourse, ResultsPayload } from '../core/types';
+import type { GradeLetter, NavSection, PlannedCourse, ResultsPayload } from '../core/types';
 import type { SectionState } from './OverviewView';
 import { SectionError, SectionSkeleton, StaleBanner } from './SectionNotice';
 
 interface ResultsViewProps {
   section: SectionState<ResultsPayload>;
+  onNavigate?: (section: NavSection) => void;
   onRetry: () => void;
 }
 
@@ -149,13 +151,12 @@ function ProjectedCgpaDot({ cx, cy, payload, warningThreshold }: ProjectedDotPro
   );
 }
 
-export function ResultsView({ section, onRetry }: ResultsViewProps) {
+export function ResultsView({ section, onNavigate, onRetry }: ResultsViewProps) {
   const payload = section.envelope?.data ?? null;
   const [targetCgpa, setTargetCgpa] = useState<number>(8.9);
   const [warningThreshold, setWarningThreshold] = useState<number>(readInitialWarningThreshold);
   const [plannedCourses, setPlannedCourses] = useState<PlannedCourse[]>([]);
   const [futureSemesters, setFutureSemesters] = useState<SimulatedFutureSemester[]>([]);
-  const [futureInitialized, setFutureInitialized] = useState(false);
   const [showSgpaSeries, setShowSgpaSeries] = useState(true);
   const [expandedSem, setExpandedSem] = useState<number | null>(5);
 
@@ -168,14 +169,13 @@ export function ResultsView({ section, onRetry }: ResultsViewProps) {
   }, [warningThreshold]);
 
   useEffect(() => {
-    if (payload && plannedCourses.length === 0) {
-      setPlannedCourses(payload.currentCourses);
+    if (!payload) return;
+    setPlannedCourses(payload.currentCourses);
+    setFutureSemesters(buildDefaultFutureSemesters(payload.currentSemester));
+    if (payload.semesters.length > 0) {
+      setExpandedSem(payload.semesters[payload.semesters.length - 1].semester);
     }
-    if (payload && !futureInitialized) {
-      setFutureSemesters(buildDefaultFutureSemesters(payload.currentSemester));
-      setFutureInitialized(true);
-    }
-  }, [payload, plannedCourses.length, futureInitialized]);
+  }, [payload]);
 
   const summary = useMemo(
     () => (payload ? computeCgpaSummary(payload.semesters) : null),
@@ -308,9 +308,33 @@ export function ResultsView({ section, onRetry }: ResultsViewProps) {
       {section.loading && !payload ? (
         <SectionSkeleton rows={5} />
       ) : section.error && !payload ? (
-        <SectionError sectionName="Results & CGPA" message={section.error} onRetry={onRetry} />
+        <SectionError sectionName="CGPA Planner & Results" message={section.error} onRetry={onRetry} />
       ) : payload && summary ? (
         <>
+          {/* Page Header */}
+          <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 sm:p-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <h2 className="font-display text-xl font-bold text-slate-900 dark:text-slate-50">
+                  CGPA Planner &amp; Semester Results
+                </h2>
+                <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                  Set your target CGPA, test Semester {payload.currentSemester} expected grades, and project upcoming terms.
+                </p>
+              </div>
+              {onNavigate ? (
+                <button
+                  type="button"
+                  onClick={() => onNavigate('marks')}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 px-3.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <span>View Current CAE Marks</span>
+                  <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+          </section>
+
           {/* KPI Row */}
           <section className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5">

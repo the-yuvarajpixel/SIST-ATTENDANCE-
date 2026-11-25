@@ -4,6 +4,7 @@ import { AttendanceView } from './components/AttendanceView';
 import { CommandPalette } from './components/CommandPalette';
 import { DeadlinesView } from './components/DeadlinesView';
 import { LiveLoginGuideView } from './components/LiveLoginGuideView';
+import { MarksView } from './components/MarksView';
 import { NotificationsView } from './components/NotificationsView';
 import { OverviewView, type SectionState } from './components/OverviewView';
 import { PortalSyncView } from './components/PortalSyncView';
@@ -84,6 +85,7 @@ function getInitialSection(): NavSection {
     if (window.location.pathname === '/setup') return 'setup';
     if (window.location.pathname === '/live-guide') return 'live-guide';
     if (window.location.pathname === '/sync') return 'sync';
+    if (window.location.pathname === '/marks') return 'marks';
   }
   return 'overview';
 }
@@ -518,9 +520,18 @@ export default function App() {
               />
             ) : null}
 
+            {activeSection === 'marks' ? (
+              <MarksView
+                section={results}
+                onNavigate={setActiveSection}
+                onRetry={() => void loadSection('results', true)}
+              />
+            ) : null}
+
             {activeSection === 'results' ? (
               <ResultsView
                 section={results}
+                onNavigate={setActiveSection}
                 onRetry={() => void loadSection('results', true)}
               />
             ) : null}

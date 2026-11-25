@@ -3,6 +3,7 @@ import {
   LiveUpstreamError,
   buildProfileFromMoodle,
   parseErpAttendance,
+  parseErpCaeMarks,
   parseErpDeadlines,
   parseErpNotifications,
   parseErpProfile,
@@ -27,6 +28,7 @@ import type {
   NotificationItem,
   ResultsPayload,
   StudentProfile,
+  SubjectCaeMark,
   TimetableSlot,
 } from '../core/types';
 import type { StoredSession } from './session';
@@ -45,6 +47,7 @@ const DEFAULT_ERP_PATHS = {
   timetable: '/erp/api/v1.0/TimetableDetails/getdatabyprogramme',
   semesterList: '/erp/api/v1.0/MasterStudent/studentSemesterListByRegNo',
   results: '/erp/api/v1.0/ResultMark/studentResult',
+  caeResults: '/erp/api/v1.0/CAEResult/studentCAEResult',
   deadlines: '/erp/api/v1.0/EventCalendar/listStudent',
   notifications: '/erp/api/v1.0/Notifications/student',
 } as const;
@@ -65,6 +68,7 @@ export interface LiveAdapterConfig {
     timetable: string;
     semesterList: string;
     results: string;
+    caeResults: string;
     deadlines: string;
     notifications: string;
   };
@@ -73,6 +77,7 @@ export interface LiveAdapterConfig {
     attendance: boolean;
     timetable: boolean;
     results: boolean;
+    caeResults: boolean;
     deadlines: boolean;
     notifications: boolean;
   };
@@ -139,6 +144,7 @@ export function getLiveAdapterConfig(env: NodeJS.ProcessEnv = process.env): Live
       timetable: safePath(env.ERP_TIMETABLE_PATH, DEFAULT_ERP_PATHS.timetable),
       semesterList: safePath(env.ERP_SEMESTER_LIST_PATH, DEFAULT_ERP_PATHS.semesterList),
       results: safePath(env.ERP_RESULTS_PATH, DEFAULT_ERP_PATHS.results),
+      caeResults: safePath(env.ERP_CAE_RESULTS_PATH, DEFAULT_ERP_PATHS.caeResults),
       deadlines: safePath(env.ERP_DEADLINES_PATH, DEFAULT_ERP_PATHS.deadlines),
       notifications: safePath(env.ERP_NOTIFICATIONS_PATH, DEFAULT_ERP_PATHS.notifications),
     },
@@ -147,6 +153,7 @@ export function getLiveAdapterConfig(env: NodeJS.ProcessEnv = process.env): Live
       attendance: isCustom(env.ERP_ATTENDANCE_PATH),
       timetable: isCustom(env.ERP_TIMETABLE_PATH),
       results: isCustom(env.ERP_RESULTS_PATH),
+      caeResults: isCustom(env.ERP_CAE_RESULTS_PATH),
       deadlines: isCustom(env.ERP_DEADLINES_PATH),
       notifications: isCustom(env.ERP_NOTIFICATIONS_PATH),
     },
@@ -813,9 +820,15 @@ export async function fetchLiveAttendance(
     session.erpStudentId,
     deps
   );
+  const now = new Date();
+  const todayIsoDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const body: Record<string, unknown> = studentId
-    ? { StudentId: /^\d+$/.test(studentId) ? Number(studentId) : studentId, RegisterNumber: session.registerNumber }
-    : { RegisterNumber: session.registerNumber };
+    ? {
+        StudentId: /^\d+$/.test(studentId) ? Number(studentId) : studentId,
+        RegisterNumber: session.registerNumber,
+        ToDate: todayIsoDate,
+      }
+    : { RegisterNumber: session.registerNumber, ToDate: todayIsoDate };
   const raw = await requestErpJson(
     config.erpPaths.attendance,
     session.erpToken,
@@ -823,7 +836,7 @@ export async function fetchLiveAttendance(
     { method: 'POST', body },
     deps
   );
-  return parseErpAttendance(raw);
+  return parseErpAttendance(raw, now);
 }
 
 export async function fetchLiveTimetable(
@@ -952,26 +965,55 @@ export async function fetchLiveResults(
     if (err instanceof LiveUpstreamError && err.status === 401) throw err;
   }
 
+  const fetchCaeMarksSafely = async (latestSemEntry?: Record<string, unknown>): Promise<SubjectCaeMark[]> => {
+    try {
+      const usePost = shouldUseSathyabamaPost(config.erpPaths.caeResults, config.customErpPaths.caeResults);
+      const caeBody: Record<string, unknown> = latestSemEntry
+        ? {
+            RegisterNumber: session.registerNumber,
+            AcademicMonthId: latestSemEntry.AcademicMonthId,
+            AcademicYear: latestSemEntry.AcademicYear,
+            Semester: latestSemEntry.Semester,
+          }
+        : { RegisterNumber: session.registerNumber };
+      const rawCae = await requestErpJson(
+        config.erpPaths.caeResults,
+        session.erpToken!,
+        session.registerNumber,
+        usePost ? { method: 'POST', body: caeBody } : { method: 'GET' },
+        deps
+      );
+      return parseErpCaeMarks(rawCae);
+    } catch (err) {
+      if (err instanceof LiveUpstreamError && err.status === 401) throw err;
+      return [];
+    }
+  };
+
   if (semEntries.length > 0) {
-    const settled = await Promise.allSettled(
-      semEntries.slice(0, 10).map((entry) =>
-        requestErpJson(
-          config.erpPaths.results,
-          session.erpToken!,
-          session.registerNumber,
-          {
-            method: 'POST',
-            body: {
-              RegisterNumber: session.registerNumber,
-              AcademicMonthId: entry.AcademicMonthId,
-              AcademicYear: entry.AcademicYear,
-              Semester: entry.Semester,
+    const latestSemEntry = semEntries[semEntries.length - 1];
+    const [settled, caeMarks] = await Promise.all([
+      Promise.allSettled(
+        semEntries.slice(0, 10).map((entry) =>
+          requestErpJson(
+            config.erpPaths.results,
+            session.erpToken!,
+            session.registerNumber,
+            {
+              method: 'POST',
+              body: {
+                RegisterNumber: session.registerNumber,
+                AcademicMonthId: entry.AcademicMonthId,
+                AcademicYear: entry.AcademicYear,
+                Semester: entry.Semester,
+              },
             },
-          },
-          deps
+            deps
+          )
         )
-      )
-    );
+      ),
+      fetchCaeMarksSafely(latestSemEntry),
+    ]);
 
     const allRows: unknown[] = [];
     let firstAuthErr: LiveUpstreamError | null = null;
@@ -988,17 +1030,28 @@ export async function fetchLiveResults(
       }
     }
     if (allRows.length === 0 && firstAuthErr) throw firstAuthErr;
-    return parseErpResults({ responseData: { SemResult: allRows } });
+    const parsed = parseErpResults({ responseData: { SemResult: allRows } });
+    return {
+      ...parsed,
+      caeMarks: caeMarks.length > 0 ? caeMarks : parsed.caeMarks,
+    };
   }
 
-  const raw = await requestErpJson(
-    config.erpPaths.results,
-    session.erpToken,
-    session.registerNumber,
-    { method: 'POST', body: { RegisterNumber: session.registerNumber } },
-    deps
-  );
-  return parseErpResults(raw);
+  const [raw, caeMarks] = await Promise.all([
+    requestErpJson(
+      config.erpPaths.results,
+      session.erpToken,
+      session.registerNumber,
+      { method: 'POST', body: { RegisterNumber: session.registerNumber } },
+      deps
+    ),
+    fetchCaeMarksSafely(),
+  ]);
+  const parsed = parseErpResults(raw);
+  return {
+    ...parsed,
+    caeMarks: caeMarks.length > 0 ? caeMarks : parsed.caeMarks,
+  };
 }
 
 async function fetchMoodleCourseMap(

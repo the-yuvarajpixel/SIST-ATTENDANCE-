@@ -4,6 +4,7 @@ export type NavSection =
   | 'overview'
   | 'attendance'
   | 'timetable'
+  | 'marks'
   | 'results'
   | 'deadlines'
   | 'notifications'
@@ -94,10 +95,29 @@ export interface PlannedCourse {
   expectedGrade: GradeLetter;
 }
 
+export type CaeStanding = 'strong' | 'on-track' | 'needs-improvement' | 'pending';
+
+export interface SubjectCaeMark {
+  courseCode: string;
+  courseName: string;
+  credits: number;
+  cae1: number | null;
+  cae1Max: number;
+  cae2: number | null;
+  cae2Max: number;
+  internalBonus: number | null;
+  internalBonusMax: number;
+  internalTotal: number;
+  internalMax: number;
+  standing: CaeStanding;
+  remarks?: string;
+}
+
 export interface ResultsPayload {
   semesters: SemesterResult[];
   currentSemester: number;
   currentCourses: PlannedCourse[];
+  caeMarks?: SubjectCaeMark[];
 }
 
 export type DeadlineKind = 'assignment' | 'exam' | 'fee';

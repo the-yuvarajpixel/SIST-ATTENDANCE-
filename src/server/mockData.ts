@@ -18,7 +18,10 @@ function shiftDays(daysFromNow: number, hours = 17, minutes = 0): string {
 function formatIsoDate(daysFromNow: number): string {
   const d = new Date();
   d.setDate(d.getDate() + daysFromNow);
-  return d.toISOString().slice(0, 10);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 export function buildMockProfile(registerNumber: string, displayName?: string): StudentProfile {
@@ -211,6 +214,98 @@ export function buildMockResults(): ResultsPayload {
       { courseCode: 'SCSA1604', courseName: 'Cloud Computing Architecture', credits: 3, expectedGrade: 'A+' },
       { courseCode: 'SCSA1605', courseName: 'Software Engineering & Agile', credits: 3, expectedGrade: 'A' },
       { courseCode: 'SCSA2601', courseName: 'Networks & Security Lab', credits: 2, expectedGrade: 'O' },
+    ],
+    caeMarks: [
+      {
+        courseCode: 'SCSA1601',
+        courseName: 'Computer Networks',
+        credits: 4,
+        cae1: 44,
+        cae1Max: 50,
+        cae2: 42,
+        cae2Max: 50,
+        internalBonus: 9,
+        internalBonusMax: 10,
+        internalTotal: 43.4,
+        internalMax: 50,
+        standing: 'strong',
+        remarks: 'Strong routing & TCP concepts; minor slip in subnetting speed.',
+      },
+      {
+        courseCode: 'SCSA1602',
+        courseName: 'Compiler Design',
+        credits: 4,
+        cae1: 29,
+        cae1Max: 50,
+        cae2: 31,
+        cae2Max: 50,
+        internalBonus: 7,
+        internalBonusMax: 10,
+        internalTotal: 31.0,
+        internalMax: 50,
+        standing: 'needs-improvement',
+        remarks: 'Needs revision on LR(1) parsing tables & syntax-directed translation.',
+      },
+      {
+        courseCode: 'SCSA1603',
+        courseName: 'Machine Learning',
+        credits: 4,
+        cae1: 47,
+        cae1Max: 50,
+        cae2: 48,
+        cae2Max: 50,
+        internalBonus: 10,
+        internalBonusMax: 10,
+        internalTotal: 48.0,
+        internalMax: 50,
+        standing: 'strong',
+        remarks: 'Top quartile across both CAE assessments and notebook viva.',
+      },
+      {
+        courseCode: 'SCSA1604',
+        courseName: 'Cloud Computing Architecture',
+        credits: 3,
+        cae1: 41,
+        cae1Max: 50,
+        cae2: 39,
+        cae2Max: 50,
+        internalBonus: 8.5,
+        internalBonusMax: 10,
+        internalTotal: 40.5,
+        internalMax: 50,
+        standing: 'strong',
+        remarks: 'Consistent Kubernetes & IAM architecture answers.',
+      },
+      {
+        courseCode: 'SCSA1605',
+        courseName: 'Software Engineering & Agile',
+        credits: 3,
+        cae1: 36,
+        cae1Max: 50,
+        cae2: 38,
+        cae2Max: 50,
+        internalBonus: 8,
+        internalBonusMax: 10,
+        internalTotal: 37.6,
+        internalMax: 50,
+        standing: 'on-track',
+        remarks: 'Improved +2 in CAE II; solid sprint estimation case study.',
+      },
+      {
+        courseCode: 'SCSA2601',
+        courseName: 'Networks & Security Lab',
+        credits: 2,
+        cae1: 45,
+        cae1Max: 50,
+        cae2: 46,
+        cae2Max: 50,
+        internalBonus: 9.5,
+        internalBonusMax: 10,
+        internalTotal: 45.9,
+        internalMax: 50,
+        standing: 'strong',
+        remarks: 'All Wireshark & TLS lab observations verified on time.',
+      },
     ],
   };
 }

@@ -9,6 +9,7 @@ import {
 } from './schemas';
 import type {
   AttendanceSubject,
+  CaeStanding,
   CourseGrade,
   DeadlineItem,
   DeadlineKind,
@@ -18,6 +19,7 @@ import type {
   ResultsPayload,
   SemesterResult,
   StudentProfile,
+  SubjectCaeMark,
   TimetableSlot,
   Weekday,
 } from './types';
@@ -687,7 +689,7 @@ export function parseErpProfile(
   });
 }
 
-export function parseErpAttendance(raw: unknown): AttendanceSubject[] {
+export function parseErpAttendance(raw: unknown, now = new Date()): AttendanceSubject[] {
   const rows = unwrapArray(raw, [
     'attendance',
     'subjects',
@@ -697,7 +699,8 @@ export function parseErpAttendance(raw: unknown): AttendanceSubject[] {
     'AttendanceDetails',
     'data',
   ]);
-  const nowIso = new Date().toISOString();
+  const nowMs = now.getTime();
+  const nowIso = now.toISOString();
 
   const mapped = rows
     .filter(isRecord)
@@ -727,8 +730,11 @@ export function parseErpAttendance(raw: unknown): AttendanceSubject[] {
         )
       );
       const total = Math.max(attended, rawTotal);
-      const lastUpdatedRaw = pickString(item, ['lastUpdated', 'updatedAt', 'asOf', 'UpdatedDate'], nowIso);
-      const lastUpdated = parseFlexibleDateToIso(lastUpdatedRaw, nowIso) ?? nowIso;
+      const lastUpdatedRaw = pickString(item, ['lastUpdated', 'updatedAt', 'asOf', 'UpdatedDate', 'AttendanceDate'], nowIso);
+      const parsedIso = parseFlexibleDateToIso(lastUpdatedRaw, nowIso) ?? nowIso;
+      const parsedMs = Date.parse(parsedIso);
+      // Strictly cap attendance timestamp to <= now so future-dated entries are never shown as recorded.
+      const lastUpdated = !Number.isNaN(parsedMs) && parsedMs > nowMs ? nowIso : parsedIso;
 
       return {
         courseCode: pickString(
@@ -987,7 +993,139 @@ export function parseErpResults(raw: unknown): ResultsPayload {
     Math.max(1, Math.round(pickNumber(rec, ['currentSemester', 'semester', 'Semester'], inferredSem)))
   );
 
-  return validateResults({ semesters, currentSemester, currentCourses });
+  const caeMarks = Array.isArray(rec.caeMarks) ? parseErpCaeMarks(rec.caeMarks) : [];
+
+  return validateResults({ semesters, currentSemester, currentCourses, caeMarks });
+}
+
+function pickOptionalNumber(obj: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const val = obj[key];
+    if (typeof val === 'number' && Number.isFinite(val)) return val;
+    if (typeof val === 'string') {
+      const cleaned = val.trim().replace(/%$/, '');
+      if (cleaned !== '' && !/^(ab|absent|na|n\/a|-|null|pending)$/i.test(cleaned)) {
+        const parsed = Number(cleaned);
+        if (Number.isFinite(parsed)) return parsed;
+      }
+    }
+  }
+  return null;
+}
+
+function roundTo1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function deriveCaeStanding(
+  internalTotal: number,
+  internalMax: number,
+  hasAnyScore: boolean
+): CaeStanding {
+  if (!hasAnyScore || internalMax <= 0) return 'pending';
+  const pct = (internalTotal / internalMax) * 100;
+  if (pct >= 80) return 'strong';
+  if (pct >= 65) return 'on-track';
+  return 'needs-improvement';
+}
+
+export function parseErpCaeMarks(raw: unknown): SubjectCaeMark[] {
+  const rows = unwrapArray(raw, [
+    'CAEResult',
+    'caeResult',
+    'caeMarks',
+    'CAEMarks',
+    'InternalMarks',
+    'internalMarks',
+    'marks',
+    'items',
+    'data',
+  ]);
+
+  const mapped: SubjectCaeMark[] = [];
+
+  rows.filter(isRecord).forEach((item, idx) => {
+    const courseCode = pickString(
+      item,
+      ['courseCode', 'SubjectCode', 'subjectCode', 'CourseCode', 'code'],
+      `SUB${idx + 1}`
+    );
+    const courseName = pickString(
+      item,
+      ['courseName', 'SubjectName', 'SubjectTitle', 'subjectName', 'CourseName', 'name'],
+      ''
+    );
+    if (!courseName && !courseCode) return;
+
+    const cae1Max = Math.min(200, Math.max(1, pickNumber(item, ['cae1Max', 'CAE1Max', 'MaxCAE1', 'MaxMark'], 50)));
+    const cae2Max = Math.min(200, Math.max(1, pickNumber(item, ['cae2Max', 'CAE2Max', 'MaxCAE2', 'MaxMark'], 50)));
+    const internalBonusMax = Math.min(
+      100,
+      Math.max(0, pickNumber(item, ['internalBonusMax', 'AssignmentMax', 'BonusMax'], 10))
+    );
+    const internalMax = Math.min(
+      200,
+      Math.max(1, pickNumber(item, ['internalMax', 'InternalMax', 'MaxInternal', 'TotalInternalMax'], 50))
+    );
+
+    const rawCae1 = pickOptionalNumber(item, ['cae1', 'CAE1', 'CAE1Mark', 'Cae1', 'CAT1', 'Test1', 'Mid1']);
+    const rawCae2 = pickOptionalNumber(item, ['cae2', 'CAE2', 'CAE2Mark', 'Cae2', 'CAT2', 'Test2', 'Mid2']);
+    const rawBonus = pickOptionalNumber(item, [
+      'internalBonus',
+      'AssignmentMark',
+      'assignmentMark',
+      'QuizMark',
+      'LabInternal',
+      'ActivityMark',
+    ]);
+    const explicitTotal = pickOptionalNumber(item, [
+      'internalTotal',
+      'InternalTotal',
+      'InternalMark',
+      'TotalInternal',
+      'TotalMark',
+      'ObtainedInternal',
+    ]);
+
+    const cae1 = rawCae1 === null ? null : Math.min(cae1Max, Math.max(0, roundTo1(rawCae1)));
+    const cae2 = rawCae2 === null ? null : Math.min(cae2Max, Math.max(0, roundTo1(rawCae2)));
+    const internalBonus =
+      rawBonus === null ? null : Math.min(Math.max(internalBonusMax, 100), Math.max(0, roundTo1(rawBonus)));
+
+    const hasAnyScore = cae1 !== null || cae2 !== null || internalBonus !== null || explicitTotal !== null;
+
+    let internalTotal = 0;
+    if (explicitTotal !== null) {
+      internalTotal = Math.min(internalMax, Math.max(0, roundTo1(explicitTotal)));
+    } else if (hasAnyScore) {
+      // Standard Sathyabama 50-mark internal weighting: CAE 1 (20) + CAE 2 (20) + Assignment/Lab (10)
+      const caeWeightEach = internalBonus !== null ? (internalMax - internalBonusMax) / 2 : internalMax / 2;
+      const part1 = cae1 !== null ? (cae1 / cae1Max) * caeWeightEach : 0;
+      const part2 = cae2 !== null ? (cae2 / cae2Max) * caeWeightEach : 0;
+      const bonusPart = internalBonus ?? 0;
+      internalTotal = Math.min(internalMax, Math.max(0, roundTo1(part1 + part2 + bonusPart)));
+    }
+
+    const remarks = pickString(item, ['remarks', 'Remarks', 'Status', 'Result'], '') || undefined;
+
+    mapped.push({
+      courseCode,
+      courseName: courseName || courseCode,
+      credits: Math.min(12, Math.max(0, pickNumber(item, ['credits', 'credit', 'Credits', 'Credit'], 3))),
+      cae1,
+      cae1Max,
+      cae2,
+      cae2Max,
+      internalBonus,
+      internalBonusMax,
+      internalTotal,
+      internalMax,
+      standing: deriveCaeStanding(internalTotal, internalMax, hasAnyScore),
+      remarks,
+    });
+  });
+
+  return mapped;
 }
 
 export function parseErpDeadlines(raw: unknown): DeadlineItem[] {

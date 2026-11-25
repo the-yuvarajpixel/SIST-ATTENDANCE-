@@ -49,7 +49,8 @@ export function CommandPalette({
       { id: 'nav-overview', group: 'Navigate', label: 'Overview Dashboard', detail: 'Next class and daily summary', run: () => onNavigate('overview') },
       { id: 'nav-attendance', group: 'Navigate', label: 'Attendance & Bunk Calculator', detail: 'Check skippable classes and thresholds', run: () => onNavigate('attendance') },
       { id: 'nav-timetable', group: 'Navigate', label: 'Weekly Timetable', detail: 'Class schedule with attendance overlay', run: () => onNavigate('timetable') },
-      { id: 'nav-results', group: 'Navigate', label: 'Results & CGPA Planner', detail: 'Semester history and target grade planner', run: () => onNavigate('results') },
+      { id: 'nav-marks', group: 'Navigate', label: 'Marks (CAE)', detail: 'Continuous assessment marks for the current term, subject by subject', run: () => onNavigate('marks') },
+      { id: 'nav-results', group: 'Navigate', label: 'CGPA Planner & Results', detail: 'Target CGPA calculator, grade planner, and semester history', run: () => onNavigate('results') },
       { id: 'nav-deadlines', group: 'Navigate', label: 'Unified Deadlines', detail: 'LMS assignments, exams, and fee due dates', run: () => onNavigate('deadlines') },
       { id: 'nav-notifications', group: 'Navigate', label: 'Notifications & Circulars', detail: 'Searchable ERP and LMS feed', run: () => onNavigate('notifications') },
       { id: 'nav-sync', group: 'Navigate', label: 'Sync Moodle LMS & College ERP', detail: 'Connect portals in-place and force live sync', run: () => onNavigate('sync') },
@@ -146,7 +147,7 @@ export function CommandPalette({
                 executeEntry(filtered[selectedIndex]);
               }
             }}
-            placeholder="Jump to attendance, CGPA planner, a subject, or a deadline..."
+            placeholder="Jump to attendance, CAE marks, CGPA planner, or a deadline..."
             aria-label="Search portal commands and content"
             className="w-full bg-transparent text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none"
           />

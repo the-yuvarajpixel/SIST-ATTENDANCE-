@@ -1,6 +1,11 @@
 import { useMemo, useState } from 'react';
 import { Minus, Plus, RotateCcw } from 'lucide-react';
-import { computeOverallAttendance, simulateAttendance } from '../core/attendance';
+import {
+  clampAttendanceDateToToday,
+  computeOverallAttendance,
+  getLatestAttendanceDate,
+  simulateAttendance,
+} from '../core/attendance';
 import type { AttendanceSubject } from '../core/types';
 import type { SectionState } from './OverviewView';
 import { SectionError, SectionSkeleton, StaleBanner } from './SectionNotice';
@@ -25,11 +30,14 @@ export function AttendanceView({
 
   const subjects = section.envelope?.data ?? [];
 
+  const latestDateInfo = useMemo(() => getLatestAttendanceDate(subjects), [subjects]);
+
   const rows = useMemo(() => {
     return subjects.map((subject) => {
       const delta = deltas[subject.courseCode] ?? { present: 0, absent: 0 };
       const sim = simulateAttendance(subject, delta.present, delta.absent, targetPercent);
-      return { subject, delta, sim };
+      const cappedDate = clampAttendanceDateToToday(subject.lastUpdated);
+      return { subject, delta, sim, cappedDate };
     });
   }, [subjects, deltas, targetPercent]);
 
@@ -87,6 +95,23 @@ export function AttendanceView({
               ({overall.totalAttended}/{overall.totalHeld} classes) · {overall.shortageCount} below{' '}
               {targetPercent}% · {overall.safeCount} safe
             </p>
+            {latestDateInfo.formattedDate ? (
+              <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+                <span className="font-medium text-slate-700 dark:text-slate-300">
+                  Updated till {latestDateInfo.formattedDate}
+                </span>
+                <span aria-hidden="true"> · </span>
+                <span>Recorded classes up to latest date only</span>
+                {hasAnyDelta ? (
+                  <>
+                    <span aria-hidden="true"> · </span>
+                    <span className="text-blue-700 dark:text-blue-400 font-medium">
+                      What-if simulation active
+                    </span>
+                  </>
+                ) : null}
+              </p>
+            ) : null}
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
@@ -185,7 +210,7 @@ export function AttendanceView({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
-                {filteredRows.map(({ subject, delta, sim }) => {
+                {filteredRows.map(({ subject, delta, sim, cappedDate }) => {
                   const barColor =
                     sim.status === 'shortage'
                       ? 'bg-red-600 dark:bg-red-500'
@@ -212,6 +237,8 @@ export function AttendanceView({
                           <span className="font-mono">{subject.courseCode}</span>
                           <span aria-hidden="true"> · </span>
                           <span>{subject.faculty}</span>
+                          <span aria-hidden="true"> · </span>
+                          <span className="font-mono tabular-nums">Till {cappedDate.displayDate}</span>
                         </p>
                         <div className="mt-2 h-1.5 w-full max-w-[200px] overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
                           <div
@@ -268,8 +295,16 @@ export function AttendanceView({
               </tbody>
             </table>
           </div>
+          <div className="border-t border-slate-200 dark:border-slate-800 px-5 py-3 text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center justify-between gap-2">
+            <span>
+              Actual attendance counts include only classes conducted up to{' '}
+              {latestDateInfo.formattedDate ?? 'today'}.
+            </span>
+            <span>What-if controls simulate upcoming classes locally without changing recorded counts.</span>
+          </div>
         </section>
       )}
     </div>
   );
 }
+

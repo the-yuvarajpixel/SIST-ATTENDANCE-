@@ -405,3 +405,113 @@ export function analyzeAttendanceInsights(
   };
 }
 
+function toLocalDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function parseDateAsLocalMidnight(raw: string): Date | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const isoDayMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (isoDayMatch) {
+    const year = Number(isoDayMatch[1]);
+    const month = Number(isoDayMatch[2]);
+    const day = Number(isoDayMatch[3]);
+    const dt = new Date(year, month - 1, day);
+    return Number.isNaN(dt.getTime()) ? null : dt;
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+}
+
+/**
+ * Clamps a recorded attendance date strictly to <= today so future scheduled sessions
+ * never appear as recorded attendance dates.
+ */
+export function clampAttendanceDateToToday(
+  rawDate: string,
+  now = new Date()
+): { dateKey: string; displayDate: string; wasFuture: boolean } {
+  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const parsed = parseDateAsLocalMidnight(rawDate);
+  if (!parsed) {
+    return {
+      dateKey: toLocalDateKey(todayMidnight),
+      displayDate: todayMidnight.toLocaleDateString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      }),
+      wasFuture: false,
+    };
+  }
+
+  const wasFuture = parsed.getTime() > todayMidnight.getTime();
+  const effective = wasFuture ? todayMidnight : parsed;
+  return {
+    dateKey: toLocalDateKey(effective),
+    displayDate: effective.toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    }),
+    wasFuture,
+  };
+}
+
+export interface LatestAttendanceDateInfo {
+  latestDateKey: string | null;
+  formattedDate: string | null;
+  shortDate: string | null;
+  cappedToToday: boolean;
+}
+
+/**
+ * Computes the latest recorded attendance cutoff date across all subjects, strictly capped to today.
+ */
+export function getLatestAttendanceDate(
+  subjects: AttendanceSubject[],
+  now = new Date()
+): LatestAttendanceDateInfo {
+  if (subjects.length === 0) {
+    return { latestDateKey: null, formattedDate: null, shortDate: null, cappedToToday: false };
+  }
+
+  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let latest: Date | null = null;
+  let cappedToToday = false;
+
+  for (const subject of subjects) {
+    const parsed = parseDateAsLocalMidnight(subject.lastUpdated);
+    if (!parsed) continue;
+    let effective = parsed;
+    if (effective.getTime() > todayMidnight.getTime()) {
+      effective = todayMidnight;
+      cappedToToday = true;
+    }
+    if (!latest || effective.getTime() > latest.getTime()) {
+      latest = effective;
+    }
+  }
+
+  const finalDate = latest ?? todayMidnight;
+  return {
+    latestDateKey: toLocalDateKey(finalDate),
+    formattedDate: finalDate.toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    }),
+    shortDate: finalDate.toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+    }),
+    cappedToToday,
+  };
+}
+
+
