@@ -9,7 +9,7 @@
     "start": "node --import tsx server.ts --production",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
-    "test": "tsx --test src/core/core.test.ts src/server/session.test.ts"
+    "test": "tsx --test src/core/core.test.ts src/core/liveParsers.test.ts src/server/session.test.ts src/server/liveAdapters.test.ts"
   },
   "engines": {
     "node": ">=22.12.0"

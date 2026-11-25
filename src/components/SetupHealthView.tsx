@@ -18,6 +18,7 @@ interface SetupHealthViewProps {
   onToggleErpOutage: (next: boolean) => Promise<void>;
   onNavigate: (section: NavSection) => void;
   onRefreshAll: () => void;
+  onSwitchToLiveSignIn: () => void;
 }
 
 export function SetupHealthView({
@@ -26,6 +27,7 @@ export function SetupHealthView({
   onToggleErpOutage,
   onNavigate,
   onRefreshAll,
+  onSwitchToLiveSignIn,
 }: SetupHealthViewProps) {
   const [report, setReport] = useState<HealthReport | null>(null);
   const [loading, setLoading] = useState(true);
@@ -68,19 +70,32 @@ export function SetupHealthView({
               Setup &amp; Health Diagnostics
             </h2>
             <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-              Plain-English readiness checklist for ERP, Moodle LMS, session security, and cache resilience.
+              Plain-English readiness checklist for live ERP, Moodle LMS, session security, and cache resilience.
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={() => void runCheck(true)}
-            disabled={loading}
-            className="inline-flex items-center gap-2 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-4 py-2 text-xs font-medium text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden="true" />
-            Run deep check
-          </button>
+          <div className="flex flex-wrap items-center gap-2.5">
+            {user.mode === 'mock' ? (
+              <button
+                type="button"
+                onClick={onSwitchToLiveSignIn}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/40 px-3.5 py-2 text-xs font-medium text-blue-800 dark:text-blue-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                Connect Live ERP / LMS
+                <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={() => void runCheck(true)}
+              disabled={loading}
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-4 py-2 text-xs font-medium text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden="true" />
+              Run deep check
+            </button>
+          </div>
         </div>
 
         {report ? (
@@ -94,7 +109,7 @@ export function SetupHealthView({
                     : 'text-amber-700 dark:text-amber-400'
                 }
               >
-                {report.status === 'ok' ? 'All systems operational' : 'Degraded (cache fallback active)'}
+                {report.status === 'ok' ? 'All systems operational' : 'Action recommended'}
               </strong>
             </span>
             <span>
@@ -164,7 +179,7 @@ export function SetupHealthView({
                         {check.status === 'ok'
                           ? 'Operational'
                           : check.status === 'warning'
-                            ? 'Degraded'
+                            ? 'Needs setup'
                             : 'Issue'}
                       </span>
                     </div>
@@ -265,6 +280,14 @@ export function SetupHealthView({
               <div className="py-2.5 flex items-center justify-between gap-4">
                 <dt className="text-slate-500 dark:text-slate-400">Source Mode</dt>
                 <dd className="font-mono text-slate-900 dark:text-slate-100">{user.mode}</dd>
+              </div>
+              <div className="py-2.5 flex items-center justify-between gap-4">
+                <dt className="text-slate-500 dark:text-slate-400">Connected Tokens</dt>
+                <dd className="font-mono text-slate-900 dark:text-slate-100">
+                  {[user.erpTokenPresent ? 'ERP' : null, user.lmsTokenPresent ? 'LMS' : null]
+                    .filter(Boolean)
+                    .join(' + ') || 'None'}
+                </dd>
               </div>
               <div className="py-2.5 flex items-center justify-between gap-4">
                 <dt className="text-slate-500 dark:text-slate-400">Session Expires</dt>

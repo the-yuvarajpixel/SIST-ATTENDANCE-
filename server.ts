@@ -2,6 +2,7 @@ import 'dotenv/config';
 import path from 'node:path';
 import express from 'express';
 import { TwoTierCache } from './src/core/cache';
+import { LiveUpstreamError } from './src/core/liveParsers';
 import {
   validateAttendance,
   validateDeadlines,
@@ -11,6 +12,18 @@ import {
   validateTimetable,
 } from './src/core/schemas';
 import type { DataSourceMode, HealthCheckItem, HealthReport, SectionEnvelope } from './src/core/types';
+import {
+  fetchLiveAttendance,
+  fetchLiveDeadlines,
+  fetchLiveNotifications,
+  fetchLiveProfile,
+  fetchLiveResults,
+  fetchLiveTimetable,
+  getLiveAdapterConfig,
+  probeUpstreamReachability,
+  verifyErpToken,
+  verifyMoodleToken,
+} from './src/server/liveAdapters';
 import {
   buildMockAttendance,
   buildMockDeadlines,
@@ -35,6 +48,7 @@ if (process.argv.includes('--production')) process.env.NODE_ENV = 'production';
 const PORT = Number(process.env.PORT) || 3000;
 const DEFAULT_MODE: DataSourceMode = process.env.DATA_SOURCE === 'live' ? 'live' : 'mock';
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_TOKEN_LENGTH = 1500;
 
 const cache = new TwoTierCache();
 
@@ -43,10 +57,10 @@ const simulatedErpOutage = new Set<string>();
 
 function resolveActiveSession(req: express.Request, res: express.Response): StoredSession | null {
   const { session, explicitlySignedOut } = readSession(req);
-  if (session && session.mode === 'mock' && DEFAULT_MODE === 'mock') return session;
+  if (session) return session;
   if (explicitlySignedOut || DEFAULT_MODE === 'live') return null;
 
-  // In mock mode, seamlessly start a demo session on first visit so the dashboard works immediately.
+  // In default mock mode, seamlessly start a demo session on first visit so the dashboard works immediately.
   return writeSessionCookie(req, res, {
     registerNumber: '42110482',
     name: 'Arjun Subramanian',
@@ -57,11 +71,12 @@ function resolveActiveSession(req: express.Request, res: express.Response): Stor
 }
 
 export function createApp() {
-  if (process.env.NODE_ENV === 'production' && !isSessionSecretConfigured()) throw new Error('Set SESSION_SECRET before production startup');
+  if (process.env.NODE_ENV === 'production' && !isSessionSecretConfigured()) {
+    throw new Error('Set SESSION_SECRET before production startup');
+  }
   const app = express();
   app.set('trust proxy', process.env.VERCEL ? 1 : false);
   app.disable('x-powered-by');
-  
 
   // Baseline security headers (iframe-compatible for AI Studio preview)
   app.use((_req, res, next) => {
@@ -86,20 +101,125 @@ export function createApp() {
   app.get('/api/health', async (req, res) => {
     const deep = req.query.deep === '1';
     const { session } = readSession(req);
-    const userHash = session ? TwoTierCache.hashUserKey(JSON.stringify([session.registerNumber, session.name, session.exp])) : null;
+    const activeMode: DataSourceMode = session?.mode ?? DEFAULT_MODE;
+    const userHash = session
+      ? TwoTierCache.hashUserKey(JSON.stringify([session.registerNumber, session.name, session.exp]))
+      : null;
     const outageOn = userHash ? simulatedErpOutage.has(userHash) : false;
     const secretConfigured = isSessionSecretConfigured();
     const cacheInfo = cache.stats();
+    const liveConfig = getLiveAdapterConfig();
+
+    const [erpProbe, lmsProbe] = deep
+      ? await Promise.all([
+          liveConfig.erpBaseUrl ? probeUpstreamReachability(liveConfig.erpBaseUrl, '/') : Promise.resolve(null),
+          liveConfig.lmsBaseUrl
+            ? probeUpstreamReachability(liveConfig.lmsBaseUrl, '/login/index.php')
+            : Promise.resolve(null),
+        ])
+      : [null, null];
+
+    const erpCheck: HealthCheckItem = (() => {
+      if (outageOn) {
+        return {
+          id: 'erp-adapter',
+          label: 'College ERP adapter',
+          status: 'error',
+          summary: 'Simulated ERP outage is active — ERP sections fall back to last cached copy (stale-while-error).',
+          action: 'Disable simulated ERP outage below to restore refresh.',
+        };
+      }
+      if (liveConfig.erpConfigError) {
+        return {
+          id: 'erp-adapter',
+          label: 'College ERP adapter',
+          status: 'error',
+          summary: `Invalid ERP_BASE_URL configuration: ${liveConfig.erpConfigError}`,
+          action: 'Set a valid public HTTPS URL for ERP_BASE_URL in environment variables.',
+        };
+      }
+      if (!liveConfig.erpBaseUrl) {
+        return {
+          id: 'erp-adapter',
+          label: 'College ERP adapter',
+          status: activeMode === 'live' ? 'warning' : 'warning',
+          summary:
+            activeMode === 'live'
+              ? 'ERP_BASE_URL is not configured. Live Moodle LMS sync works, while ERP sections need ERP_BASE_URL.'
+              : 'Live ERP adapter is ready once ERP_BASE_URL is set. Currently running in sample data mode.',
+          action: 'Set ERP_BASE_URL (e.g. your HTTPS ERP gateway URL) in environment variables to enable live ERP sync.',
+        };
+      }
+      if (erpProbe) {
+        return {
+          id: 'erp-adapter',
+          label: 'College ERP adapter',
+          status: erpProbe.reachable ? 'ok' : 'error',
+          summary: erpProbe.summary,
+          action: erpProbe.reachable
+            ? undefined
+            : 'Verify ERP_BASE_URL is reachable from this host and not blocked by a firewall.',
+        };
+      }
+      return {
+        id: 'erp-adapter',
+        label: 'College ERP adapter',
+        status: 'ok',
+        summary: `Configured for ${liveConfig.erpHost}. Run a deep check to test live reachability.`,
+      };
+    })();
+
+    const lmsCheck: HealthCheckItem = (() => {
+      if (liveConfig.lmsConfigError) {
+        return {
+          id: 'lms-adapter',
+          label: 'Moodle LMS web-services adapter',
+          status: 'error',
+          summary: `Invalid LMS_BASE_URL configuration: ${liveConfig.lmsConfigError}`,
+          action: 'Set a valid public HTTPS URL for LMS_BASE_URL in environment variables.',
+        };
+      }
+      if (!liveConfig.lmsBaseUrl) {
+        return {
+          id: 'lms-adapter',
+          label: 'Moodle LMS web-services adapter',
+          status: 'error',
+          summary: 'LMS_BASE_URL is not configured.',
+          action: 'Set LMS_BASE_URL (default: https://sathyabama.cognibot.in).',
+        };
+      }
+      if (lmsProbe) {
+        return {
+          id: 'lms-adapter',
+          label: 'Moodle LMS web-services adapter',
+          status: lmsProbe.reachable ? 'ok' : 'warning',
+          summary: lmsProbe.summary,
+          action: lmsProbe.reachable
+            ? undefined
+            : 'Check outbound HTTPS access to Moodle LMS or update LMS_BASE_URL.',
+        };
+      }
+      return {
+        id: 'lms-adapter',
+        label: 'Moodle LMS web-services adapter',
+        status: 'ok',
+        summary: `Live Moodle REST adapter ready (${liveConfig.lmsHost}). Sign in with your Moodle web-service token to sync deadlines and notifications.`,
+      };
+    })();
 
     const checks: HealthCheckItem[] = [
       {
         id: 'data-source',
         label: 'Data source mode',
-        status: DEFAULT_MODE === 'live' ? 'error' : 'ok',
+        status: 'ok',
         summary:
-          DEFAULT_MODE === 'mock'
-            ? 'Running in sample data mode (dates shifted to today). Any valid register number signs in.'
-            : 'Live mode is not implemented in this source distribution.',
+          session?.mode === 'live'
+            ? 'Live session active — fetching data directly from verified upstream ERP / Moodle LMS endpoints.'
+            : session?.mode === 'mock' && DEFAULT_MODE === 'live'
+              ? 'Sample data session active (server default is live mode). Switch to Live ERP / LMS anytime.'
+              : DEFAULT_MODE === 'live'
+                ? 'Server default is live mode. Sign in with your verified ERP or Moodle LMS tokens.'
+                : 'Sample data mode active (live ERP + Moodle LMS sign-in is also enabled from the Sign-In screen).',
       },
       {
         id: 'session-secret',
@@ -110,21 +230,8 @@ export function createApp() {
           : 'Using a random per-process development key. Set a 32+ character SESSION_SECRET before deploying online.',
         action: secretConfigured ? undefined : 'Set SESSION_SECRET in your environment variables.',
       },
-      {
-        id: 'erp-adapter',
-        label: 'College ERP adapter',
-        status: outageOn || DEFAULT_MODE === 'live' ? 'error' : 'warning',
-        summary: outageOn
-          ? 'Simulated ERP outage is active — ERP sections fall back to last cached copy (stale-while-error).'
-          : 'ERP uses sample data; upstream connectivity is not tested.',
-        action: outageOn ? 'Disable simulated ERP outage below to restore live refresh.' : undefined,
-      },
-      {
-        id: 'lms-adapter',
-        label: 'Moodle LMS web-services adapter',
-        status: DEFAULT_MODE === 'live' ? 'error' : 'warning',
-        summary: 'LMS uses sample data; upstream connectivity is not tested.',
-      },
+      erpCheck,
+      lmsCheck,
       {
         id: 'cache',
         label: 'Two-tier per-user cache',
@@ -134,12 +241,18 @@ export function createApp() {
     ];
 
     const report: HealthReport = {
-      status: checks.some(check => check.status !== 'ok') ? 'degraded' : 'ok',
-      mode: DEFAULT_MODE,
+      status: checks.some((check) => check.status !== 'ok') ? 'degraded' : 'ok',
+      mode: activeMode,
       checkedAt: new Date().toISOString(),
       deep,
       erpOutageSimulated: outageOn,
       checks,
+      liveAdapters: {
+        erpConfigured: Boolean(liveConfig.erpBaseUrl),
+        lmsConfigured: Boolean(liveConfig.lmsBaseUrl),
+        erpHost: liveConfig.erpHost,
+        lmsHost: liveConfig.lmsHost,
+      },
     };
     res.json(report);
   });
@@ -154,8 +267,8 @@ export function createApp() {
     res.json({ authenticated: true, user: toPublicUser(session) });
   });
 
-  // Sign in (never stores passwords; accepts mock register number OR live ERP/LMS tokens)
-  app.post('/api/auth/login', (req, res) => {
+  // Sign in (never stores passwords; accepts mock register number OR verified live ERP/LMS tokens)
+  app.post('/api/auth/login', async (req, res) => {
     const ip = req.ip || 'local';
     if (!checkLoginRateLimit(ip)) {
       res.status(429).json({ error: 'Too many sign-in attempts. Please wait a minute and try again.' });
@@ -165,8 +278,13 @@ export function createApp() {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const registerNumber = typeof body.registerNumber === 'string' ? body.registerNumber.trim() : '';
     const displayName = typeof body.name === 'string' ? body.name.trim() : '';
-    if (displayName.length > 100) { res.status(400).json({ error: 'Display name must be at most 100 characters.' }); return; }
+    if (displayName.length > 100) {
+      res.status(400).json({ error: 'Display name must be at most 100 characters.' });
+      return;
+    }
     const mode: DataSourceMode = body.mode === 'live' ? 'live' : 'mock';
+    const erpToken = typeof body.erpToken === 'string' ? body.erpToken.trim() : '';
+    const lmsToken = typeof body.lmsToken === 'string' ? body.lmsToken.trim() : '';
 
     const fieldErrors: Record<string, string> = {};
     if (!registerNumber) {
@@ -175,9 +293,16 @@ export function createApp() {
       fieldErrors.registerNumber = 'Register number must be 6–14 letters or digits without spaces.';
     }
 
-    if (mode === 'live' || DEFAULT_MODE === 'live') {
-      res.status(503).json({ error: 'Live ERP/LMS integration is not implemented. Use sample mode.' });
-      return;
+    if (mode === 'live') {
+      if (!erpToken && !lmsToken) {
+        fieldErrors.lmsToken = 'Paste a Moodle LMS web-service token or an ERP session token to connect live.';
+      }
+      if (erpToken && (erpToken.length < 8 || erpToken.length > MAX_TOKEN_LENGTH)) {
+        fieldErrors.erpToken = `ERP session token must be 8–${MAX_TOKEN_LENGTH} characters.`;
+      }
+      if (lmsToken && (lmsToken.length < 8 || lmsToken.length > MAX_TOKEN_LENGTH)) {
+        fieldErrors.lmsToken = `Moodle LMS token must be 8–${MAX_TOKEN_LENGTH} characters.`;
+      }
     }
 
     if (Object.keys(fieldErrors).length > 0) {
@@ -185,11 +310,62 @@ export function createApp() {
       return;
     }
 
+    if (mode === 'live') {
+      try {
+        let verifiedMoodleInfo: { userid: number; fullname: string } | null = null;
+        let verifiedErpName: string | null = null;
+
+        if (lmsToken) {
+          const siteInfo = await verifyMoodleToken(lmsToken);
+          verifiedMoodleInfo = { userid: siteInfo.userid, fullname: siteInfo.fullname };
+        }
+        if (erpToken) {
+          const erpProfile = await verifyErpToken(
+            erpToken,
+            registerNumber.toUpperCase(),
+            displayName || verifiedMoodleInfo?.fullname,
+            Boolean(lmsToken)
+          );
+          verifiedErpName = erpProfile.name;
+        }
+
+        const resolvedName = (
+          displayName ||
+          verifiedErpName ||
+          verifiedMoodleInfo?.fullname ||
+          registerNumber.toUpperCase()
+        ).slice(0, 100);
+
+        const stored = writeSessionCookie(req, res, {
+          registerNumber: registerNumber.toUpperCase(),
+          name: resolvedName,
+          mode: 'live',
+          erpToken: erpToken || undefined,
+          lmsToken: lmsToken || undefined,
+          lmsUserId: verifiedMoodleInfo?.userid,
+        });
+
+        res.json({ authenticated: true, user: toPublicUser(stored) });
+        return;
+      } catch (err) {
+        if (err instanceof LiveUpstreamError) {
+          res.status(err.status).json({
+            error: err.message,
+            fieldErrors: err.field ? { [err.field]: err.message } : undefined,
+          });
+          return;
+        }
+        const message = err instanceof Error ? err.message : 'Unable to verify live credentials.';
+        res.status(502).json({ error: message });
+        return;
+      }
+    }
+
     const profile = buildMockProfile(registerNumber, displayName || undefined);
     const stored = writeSessionCookie(req, res, {
       registerNumber: profile.registerNumber,
       name: profile.name,
-      mode,
+      mode: 'mock',
       erpToken: 'mock-erp-session',
       lmsToken: 'mock-lms-token',
     });
@@ -201,7 +377,9 @@ export function createApp() {
   app.post('/api/auth/logout', (req, res) => {
     const { session } = readSession(req);
     if (session) {
-      const userHash = TwoTierCache.hashUserKey(JSON.stringify([session.registerNumber, session.name, session.exp]));
+      const userHash = TwoTierCache.hashUserKey(
+        JSON.stringify([session.registerNumber, session.name, session.exp])
+      );
       cache.clearUser(userHash);
       simulatedErpOutage.delete(userHash);
     }
@@ -216,14 +394,22 @@ export function createApp() {
       res.status(401).json({ error: 'Sign in required.' });
       return;
     }
-    const userHash = TwoTierCache.hashUserKey(JSON.stringify([session.registerNumber, session.name, session.exp]));
+    const userHash = TwoTierCache.hashUserKey(
+      JSON.stringify([session.registerNumber, session.name, session.exp])
+    );
     const enabled = req.body?.simulateErpOutage;
-    if (typeof enabled !== 'boolean') { res.status(400).json({ error: 'Expected a boolean simulateErpOutage.' }); return; }
-    if (enabled) {
-      if (simulatedErpOutage.size >= 2048 && !simulatedErpOutage.has(userHash)) simulatedErpOutage.delete(simulatedErpOutage.values().next().value!);
-      simulatedErpOutage.add(userHash);
+    if (typeof enabled !== 'boolean') {
+      res.status(400).json({ error: 'Expected a boolean simulateErpOutage.' });
+      return;
     }
-    else simulatedErpOutage.delete(userHash);
+    if (enabled) {
+      if (simulatedErpOutage.size >= 2048 && !simulatedErpOutage.has(userHash)) {
+        simulatedErpOutage.delete(simulatedErpOutage.values().next().value!);
+      }
+      simulatedErpOutage.add(userHash);
+    } else {
+      simulatedErpOutage.delete(userHash);
+    }
     res.json({ erpOutageSimulated: enabled });
   });
 
@@ -233,7 +419,8 @@ export function createApp() {
     sectionKey: string,
     source: 'ERP' | 'LMS' | 'ERP + LMS',
     usesErp: boolean,
-    loader: (session: StoredSession) => T,
+    mockLoader: (session: StoredSession) => T,
+    liveLoader: (session: StoredSession) => Promise<T>,
     validator: (raw: unknown) => T
   ) {
     app.get(routePath, async (req, res) => {
@@ -242,7 +429,9 @@ export function createApp() {
         res.status(401).json({ error: 'Session expired. Please sign in again.' });
         return;
       }
-      const userHash = TwoTierCache.hashUserKey(JSON.stringify([session.registerNumber, session.name, session.exp]));
+      const userHash = TwoTierCache.hashUserKey(
+        JSON.stringify([session.registerNumber, session.name, session.exp])
+      );
       const forceRefresh = req.query.refresh === '1';
 
       try {
@@ -254,38 +443,84 @@ export function createApp() {
             if (usesErp && simulatedErpOutage.has(userHash)) {
               throw new Error('ERP portal did not respond within 5s');
             }
-            const raw = loader(session);
+            const raw =
+              session.mode === 'live' ? await liveLoader(session) : mockLoader(session);
             return validator(raw);
           },
           { forceRefresh }
         );
 
+        const resolvedSource =
+          session.mode === 'live' && source === 'ERP + LMS'
+            ? session.erpToken && session.lmsToken
+              ? 'ERP + LMS'
+              : session.lmsToken
+                ? 'LMS'
+                : 'ERP'
+            : session.mode === 'live' && sectionKey === 'profile' && !session.erpToken && session.lmsToken
+              ? 'LMS'
+              : source;
+
         const envelope: SectionEnvelope<T> = {
           data: result.data,
           stale: result.stale,
           fetchedAt: result.fetchedAt,
-          source,
+          source: resolvedSource,
           mode: session.mode,
           warning: result.warning,
         };
         res.json(envelope);
       } catch (err) {
+        const status = err instanceof LiveUpstreamError ? err.status : 503;
         const message = err instanceof Error ? err.message : 'Unable to fetch section data.';
-        res.status(503).json({ error: message, section: sectionKey, source });
+        res.status(status).json({ error: message, section: sectionKey, source });
       }
     });
   }
 
-  registerSection('/api/portal/profile', 'profile', 'ERP', true, (s) => buildMockProfile(s.registerNumber, s.name), validateProfile);
-  registerSection('/api/portal/attendance', 'attendance', 'ERP', true, () => buildMockAttendance(), validateAttendance);
-  registerSection('/api/portal/timetable', 'timetable', 'ERP', true, () => buildMockTimetable(), validateTimetable);
-  registerSection('/api/portal/results', 'results', 'ERP', true, () => buildMockResults(), validateResults);
+  registerSection(
+    '/api/portal/profile',
+    'profile',
+    'ERP',
+    true,
+    (s) => buildMockProfile(s.registerNumber, s.name),
+    (s) => fetchLiveProfile(s),
+    validateProfile
+  );
+  registerSection(
+    '/api/portal/attendance',
+    'attendance',
+    'ERP',
+    true,
+    () => buildMockAttendance(),
+    (s) => fetchLiveAttendance(s),
+    validateAttendance
+  );
+  registerSection(
+    '/api/portal/timetable',
+    'timetable',
+    'ERP',
+    true,
+    () => buildMockTimetable(),
+    (s) => fetchLiveTimetable(s),
+    validateTimetable
+  );
+  registerSection(
+    '/api/portal/results',
+    'results',
+    'ERP',
+    true,
+    () => buildMockResults(),
+    (s) => fetchLiveResults(s),
+    validateResults
+  );
   registerSection(
     '/api/portal/deadlines',
     'deadlines',
     'ERP + LMS',
     false,
     () => buildMockDeadlines().items,
+    (s) => fetchLiveDeadlines(s),
     validateDeadlines
   );
   registerSection(
@@ -294,6 +529,7 @@ export function createApp() {
     'ERP + LMS',
     false,
     () => buildMockNotifications(),
+    (s) => fetchLiveNotifications(s),
     validateNotifications
   );
 
@@ -302,10 +538,19 @@ export function createApp() {
     res.status(404).json({ error: 'API endpoint not found.' });
   });
 
-  app.use((err: {status?: number}, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    const status = err.status === 413 ? 413 : err.status === 400 ? 400 : 500;
-    res.status(status).json({ error: status === 413 ? 'Request too large.' : status === 400 ? 'Invalid JSON request.' : 'Internal server error.' });
-  });
+  app.use(
+    (err: { status?: number }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      const status = err.status === 413 ? 413 : err.status === 400 ? 400 : 500;
+      res.status(status).json({
+        error:
+          status === 413
+            ? 'Request too large.'
+            : status === 400
+              ? 'Invalid JSON request.'
+              : 'Internal server error.',
+      });
+    }
+  );
   return app;
 }
 
@@ -331,7 +576,9 @@ async function startServer() {
   });
 }
 
-if (!process.env.VERCEL) startServer().catch((err) => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+if (!process.env.VERCEL && !process.env.VITEST && !process.env.DISABLE_AUTO_START) {
+  startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}

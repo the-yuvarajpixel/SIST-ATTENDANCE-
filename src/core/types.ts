@@ -143,6 +143,13 @@ export interface HealthCheckItem {
   action?: string;
 }
 
+export interface LiveAdaptersSummary {
+  erpConfigured: boolean;
+  lmsConfigured: boolean;
+  erpHost: string | null;
+  lmsHost: string | null;
+}
+
 export interface HealthReport {
   status: 'ok' | 'degraded';
   mode: DataSourceMode;
@@ -150,6 +157,7 @@ export interface HealthReport {
   deep: boolean;
   erpOutageSimulated: boolean;
   checks: HealthCheckItem[];
+  liveAdapters?: LiveAdaptersSummary;
 }
 
 export interface SessionUser {

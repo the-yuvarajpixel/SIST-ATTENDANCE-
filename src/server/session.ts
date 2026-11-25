@@ -12,6 +12,7 @@ export interface StoredSession {
   mode: DataSourceMode;
   erpToken?: string;
   lmsToken?: string;
+  lmsUserId?: number;
   exp: number;
 }
 
@@ -50,7 +51,16 @@ export function decryptSession(token: string): StoredSession | null {
     decipher.setAuthTag(tag);
     const plain = Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
     const parsed = JSON.parse(plain) as StoredSession;
-    if (!parsed || typeof parsed.registerNumber !== 'string' || typeof parsed.exp !== 'number' || !Number.isFinite(parsed.exp) || typeof parsed.name !== 'string' || !['mock', 'live'].includes(parsed.mode)) {
+    if (
+      !parsed ||
+      typeof parsed.registerNumber !== 'string' ||
+      typeof parsed.exp !== 'number' ||
+      !Number.isFinite(parsed.exp) ||
+      typeof parsed.name !== 'string' ||
+      !['mock', 'live'].includes(parsed.mode) ||
+      (parsed.lmsUserId !== undefined &&
+        (typeof parsed.lmsUserId !== 'number' || !Number.isFinite(parsed.lmsUserId)))
+    ) {
       return null;
     }
     if (Date.now() >= parsed.exp) {

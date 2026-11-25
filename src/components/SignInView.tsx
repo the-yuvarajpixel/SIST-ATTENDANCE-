@@ -1,16 +1,18 @@
-import { useState, type FormEvent } from 'react';
-import { Lock, Moon, Sun } from 'lucide-react';
-import type { DataSourceMode, SessionUser } from '../core/types';
+import { useEffect, useState, type FormEvent } from 'react';
+import { CheckCircle2, Info, Lock, Moon, Sun } from 'lucide-react';
+import type { DataSourceMode, LiveAdaptersSummary, SessionUser } from '../core/types';
 import { api } from '../lib/api';
 
 interface SignInViewProps {
   theme: 'light' | 'dark';
+  initialMode?: DataSourceMode;
   onToggleTheme: () => void;
   onSignedIn: (user: SessionUser) => void;
 }
 
-export function SignInView({ theme, onToggleTheme, onSignedIn }: SignInViewProps) {
-  const [mode, setMode] = useState<DataSourceMode>('mock');
+export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn }: SignInViewProps) {
+  const [mode, setMode] = useState<DataSourceMode>(initialMode ?? 'mock');
+  const [liveAdapters, setLiveAdapters] = useState<LiveAdaptersSummary | null>(null);
   const [registerNumber, setRegisterNumber] = useState('');
   const [name, setName] = useState('');
   const [erpToken, setErpToken] = useState('');
@@ -19,6 +21,25 @@ export function SignInView({ theme, onToggleTheme, onSignedIn }: SignInViewProps
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getHealth(false)
+      .then((health) => {
+        if (cancelled) return;
+        if (health.liveAdapters) setLiveAdapters(health.liveAdapters);
+        if (!initialMode && health.mode === 'live') {
+          setMode('live');
+        }
+      })
+      .catch(() => {
+        // Ignore health probe errors on sign-in screen
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [initialMode]);
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setFormError(null);
@@ -26,15 +47,21 @@ export function SignInView({ theme, onToggleTheme, onSignedIn }: SignInViewProps
 
     const nextFieldErrors: Record<string, string> = {};
     const trimmedReg = registerNumber.trim();
+    const trimmedErp = erpToken.trim();
+    const trimmedLms = lmsToken.trim();
+
     if (!trimmedReg || !/^[A-Za-z0-9]{6,14}$/.test(trimmedReg)) {
       nextFieldErrors.registerNumber = 'Enter a valid Register Number (6–14 letters or digits).';
     }
     if (mode === 'live') {
-      if (erpToken.trim().length < 8) {
-        nextFieldErrors.erpToken = 'Paste your ERP session token (at least 8 characters).';
+      if (!trimmedErp && !trimmedLms) {
+        nextFieldErrors.lmsToken = 'Paste your Moodle LMS token or ERP session token (at least one is required).';
       }
-      if (lmsToken.trim().length < 8) {
-        nextFieldErrors.lmsToken = 'Paste your Moodle LMS token (at least 8 characters).';
+      if (trimmedErp && trimmedErp.length < 8) {
+        nextFieldErrors.erpToken = 'ERP session token must be at least 8 characters.';
+      }
+      if (trimmedLms && trimmedLms.length < 8) {
+        nextFieldErrors.lmsToken = 'Moodle LMS token must be at least 8 characters.';
       }
     }
     if (Object.keys(nextFieldErrors).length > 0) {
@@ -50,8 +77,8 @@ export function SignInView({ theme, onToggleTheme, onSignedIn }: SignInViewProps
         registerNumber: trimmedReg,
         name: name.trim() || undefined,
         mode,
-        erpToken: mode === 'live' ? erpToken.trim() : undefined,
-        lmsToken: mode === 'live' ? lmsToken.trim() : undefined,
+        erpToken: mode === 'live' && trimmedErp ? trimmedErp : undefined,
+        lmsToken: mode === 'live' && trimmedLms ? trimmedLms : undefined,
       });
       onSignedIn(res.user);
     } catch (err) {
@@ -98,7 +125,7 @@ export function SignInView({ theme, onToggleTheme, onSignedIn }: SignInViewProps
               One dashboard for attendance, CGPA, and deadlines.
             </h1>
             <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-400">
-              Explore the dashboard using sample data. Live ERP and Moodle connections are unavailable in this version. Do not enter real credentials.
+              Connect live using your Moodle LMS web-service token or ERP session token, or explore instantly with sample student data. Tokens are verified server-side and encrypted in an HttpOnly cookie.
             </p>
             <ul className="space-y-2.5 pt-2 text-sm text-slate-700 dark:text-slate-300 border-t border-slate-200 dark:border-slate-800">
               <li>Per-subject bunk calculator with 75%, 80%, and 85% targets</li>
@@ -147,8 +174,6 @@ export function SignInView({ theme, onToggleTheme, onSignedIn }: SignInViewProps
                 type="button"
                 role="tab"
                 aria-selected={mode === 'live'}
-                disabled
-                title="Live integration is not implemented"
                 onClick={() => {
                   setMode('live');
                   setFieldErrors({});
@@ -160,7 +185,7 @@ export function SignInView({ theme, onToggleTheme, onSignedIn }: SignInViewProps
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
               >
-                Live (Unavailable)
+                Live ERP + LMS
               </button>
             </div>
 
@@ -171,6 +196,36 @@ export function SignInView({ theme, onToggleTheme, onSignedIn }: SignInViewProps
                   className="rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 px-3.5 py-2.5 text-xs text-red-800 dark:text-red-300"
                 >
                   {formError}
+                </div>
+              ) : null}
+
+              {mode === 'live' ? (
+                <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 px-3.5 py-3 text-xs space-y-2">
+                  <div className="flex items-center gap-1.5 font-medium text-slate-800 dark:text-slate-200">
+                    {liveAdapters?.lmsConfigured ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" aria-hidden="true" />
+                    ) : (
+                      <Info className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400 shrink-0" aria-hidden="true" />
+                    )}
+                    <span>Live Upstream Endpoints</span>
+                  </div>
+                  <div className="space-y-1 text-slate-600 dark:text-slate-400">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Moodle LMS</span>
+                      <span className="font-mono text-slate-800 dark:text-slate-200 truncate">
+                        {liveAdapters?.lmsHost ?? 'sathyabama.cognibot.in'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>College ERP</span>
+                      <span className="font-mono text-slate-800 dark:text-slate-200 truncate">
+                        {liveAdapters?.erpHost ?? 'Not set (ERP_BASE_URL)'}
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-slate-500 dark:text-slate-400 leading-relaxed">
+                    Connect with Moodle LMS alone for deadlines &amp; notifications, or add an ERP token when ERP_BASE_URL is configured.
+                  </p>
                 </div>
               ) : null}
 
@@ -220,28 +275,6 @@ export function SignInView({ theme, onToggleTheme, onSignedIn }: SignInViewProps
                 <>
                   <div>
                     <label
-                      htmlFor="erpToken"
-                      className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5"
-                    >
-                      ERP Session Token (from your browser after Turnstile sign-in)
-                    </label>
-                    <input
-                      id="erpToken"
-                      name="erpToken"
-                      type="password"
-                      value={erpToken}
-                      onChange={(e) => setErpToken(e.target.value)}
-                      placeholder="Paste ERP bearer / session token"
-                      aria-invalid={Boolean(fieldErrors.erpToken)}
-                      className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3.5 py-2.5 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
-                    />
-                    {fieldErrors.erpToken ? (
-                      <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.erpToken}</p>
-                    ) : null}
-                  </div>
-
-                  <div>
-                    <label
                       htmlFor="lmsToken"
                       className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5"
                     >
@@ -253,7 +286,7 @@ export function SignInView({ theme, onToggleTheme, onSignedIn }: SignInViewProps
                       type="password"
                       value={lmsToken}
                       onChange={(e) => setLmsToken(e.target.value)}
-                      placeholder="Paste Moodle web-service token"
+                      placeholder="Paste your Moodle web-service token"
                       aria-invalid={Boolean(fieldErrors.lmsToken)}
                       className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3.5 py-2.5 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                     />
@@ -261,10 +294,32 @@ export function SignInView({ theme, onToggleTheme, onSignedIn }: SignInViewProps
                       <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.lmsToken}</p>
                     ) : null}
                   </div>
+
+                  <div>
+                    <label
+                      htmlFor="erpToken"
+                      className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5"
+                    >
+                      ERP Session Token (optional unless ERP_BASE_URL is configured)
+                    </label>
+                    <input
+                      id="erpToken"
+                      name="erpToken"
+                      type="password"
+                      value={erpToken}
+                      onChange={(e) => setErpToken(e.target.value)}
+                      placeholder="Paste ERP bearer token or session cookie"
+                      aria-invalid={Boolean(fieldErrors.erpToken)}
+                      className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3.5 py-2.5 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+                    />
+                    {fieldErrors.erpToken ? (
+                      <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.erpToken}</p>
+                    ) : null}
+                  </div>
                 </>
               ) : null}
 
-              <div className="pt-2 flex flex-wrap items-center justify-between gap-3">
+              <div className="pt-2 flex items-center justify-between gap-4">
                 {mode === 'mock' ? (
                   <button
                     type="button"
@@ -274,17 +329,23 @@ export function SignInView({ theme, onToggleTheme, onSignedIn }: SignInViewProps
                     Fill sample student (42110482)
                   </button>
                 ) : (
-                  <span className="text-xs text-slate-500 dark:text-slate-400">
-                    Tokens are encrypted in your cookie and cleared on sign-out.
+                  <span className="text-xs text-slate-500 dark:text-slate-400 flex-1 min-w-0">
+                    Verified live, encrypted in HttpOnly cookie, cleared on sign-out.
                   </span>
                 )}
 
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="inline-flex items-center justify-center rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-5 py-2.5 text-sm font-medium text-white transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                  className="inline-flex items-center justify-center rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-5 py-2.5 text-sm font-medium text-white transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap shrink-0"
                 >
-                  {submitting ? 'Signing in...' : 'Open Dashboard'}
+                  {submitting
+                    ? mode === 'live'
+                      ? 'Verifying tokens...'
+                      : 'Signing in...'
+                    : mode === 'live'
+                      ? 'Connect Live'
+                      : 'Open Dashboard'}
                 </button>
               </div>
             </form>

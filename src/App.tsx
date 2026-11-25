@@ -90,6 +90,7 @@ export default function App() {
 
   const [sessionLoading, setSessionLoading] = useState(true);
   const [user, setUser] = useState<SessionUser | null>(null);
+  const [signInInitialMode, setSignInInitialMode] = useState<'mock' | 'live' | undefined>(undefined);
   const [erpOutageSimulated, setErpOutageSimulated] = useState(false);
 
   const [attendanceTarget, setAttendanceTarget] = useState<number>(getInitialTarget);
@@ -235,13 +236,14 @@ export default function App() {
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   }, []);
 
-  const handleSignOut = useCallback(async () => {
+  const handleSignOut = useCallback(async (nextMode?: 'mock' | 'live') => {
     try {
       await api.logout();
     } finally {
       for (const key of Object.keys(requestVersions.current) as SectionKey[]) {
         requestVersions.current[key] = (requestVersions.current[key] ?? 0) + 1;
       }
+      setSignInInitialMode(nextMode);
       setUser(null);
       setProfile(emptySection());
       setAttendance(emptySection());
@@ -336,8 +338,10 @@ export default function App() {
     return (
       <SignInView
         theme={theme}
+        initialMode={signInInitialMode}
         onToggleTheme={handleToggleTheme}
         onSignedIn={(signedUser) => {
+          setSignInInitialMode(undefined);
           setUser(signedUser);
           setActiveSection('overview');
         }}
@@ -443,6 +447,7 @@ export default function App() {
                 onToggleErpOutage={handleToggleErpOutage}
                 onNavigate={setActiveSection}
                 onRefreshAll={() => loadAllSections(true)}
+                onSwitchToLiveSignIn={() => void handleSignOut('live')}
               />
             ) : null}
           </div>
