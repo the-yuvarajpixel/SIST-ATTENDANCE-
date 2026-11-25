@@ -361,6 +361,7 @@ export function createApp() {
       try {
         let verifiedMoodleInfo: { userid: number; fullname: string } | null = null;
         let verifiedErpName: string | null = null;
+        let verifiedErpStudentId: string | undefined;
         let erpExchangedFromLogin = false;
         let partialWarning: string | undefined;
 
@@ -380,6 +381,7 @@ export function createApp() {
             const erpAuth = await exchangeErpCredentialsForToken(erpUsername || registerNumber, erpPassword);
             erpToken = erpAuth.token;
             verifiedErpName = erpAuth.studentName ?? null;
+            verifiedErpStudentId = erpAuth.studentId;
             erpExchangedFromLogin = true;
           } catch (erpErr) {
             if (
@@ -404,6 +406,7 @@ export function createApp() {
             Boolean(lmsToken)
           );
           verifiedErpName = erpProfile.name;
+          verifiedErpStudentId = erpProfile.erpStudentId;
         }
 
         const resolvedName = (
@@ -418,6 +421,7 @@ export function createApp() {
           name: resolvedName,
           mode: 'live',
           erpToken: erpToken || undefined,
+          erpStudentId: verifiedErpStudentId,
           lmsToken: lmsToken || undefined,
           lmsUserId: verifiedMoodleInfo?.userid,
         });
@@ -539,6 +543,7 @@ export function createApp() {
       const nextRegisterNumber = nextRegRaw.toUpperCase();
       let verifiedMoodleInfo: { userid: number; fullname: string } | null = null;
       let verifiedErpName: string | null = null;
+      let verifiedErpStudentId: string | undefined;
       let erpExchangedFromLogin = false;
       let partialWarning: string | undefined;
 
@@ -556,6 +561,7 @@ export function createApp() {
           const erpAuth = await exchangeErpCredentialsForToken(erpUsername || nextRegisterNumber, erpPassword);
           incomingErpToken = erpAuth.token;
           verifiedErpName = erpAuth.studentName ?? null;
+          verifiedErpStudentId = erpAuth.studentId;
           erpExchangedFromLogin = true;
         } catch (erpErr) {
           if (
@@ -584,6 +590,7 @@ export function createApp() {
           Boolean(finalLmsToken)
         );
         verifiedErpName = erpProfile.name;
+        verifiedErpStudentId = erpProfile.erpStudentId;
       }
 
       const oldUserHash = TwoTierCache.hashUserKey(
@@ -602,6 +609,7 @@ export function createApp() {
         name: resolvedName,
         mode: 'live',
         erpToken: finalErpToken || undefined,
+        erpStudentId: verifiedErpStudentId ?? (session.mode === 'live' ? session.erpStudentId : undefined),
         lmsToken: finalLmsToken || undefined,
         lmsUserId: verifiedMoodleInfo?.userid ?? (session.mode === 'live' ? session.lmsUserId : undefined),
       });
@@ -652,7 +660,7 @@ export function createApp() {
         section: 'profile',
         label: 'Student Profile',
         source: session.mode === 'live' && !session.erpToken && session.lmsToken ? 'LMS' : 'ERP',
-        usesErp: true,
+        usesErp: session.mode === 'mock' || Boolean(session.erpToken),
         mockLoader: (s) => buildMockProfile(s.registerNumber, s.name),
         liveLoader: (s) => fetchLiveProfile(s),
         validator: validateProfile,
@@ -778,14 +786,15 @@ export function createApp() {
     const erpLatencyMs = Date.now() - erpStart;
 
     const lmsSections = sectionResults.filter((s) => s.source === 'LMS' || s.source === 'ERP + LMS');
-    const erpSections = sectionResults.filter((s) => s.source === 'ERP' || s.source === 'ERP + LMS');
+    // Evaluate ERP health strictly from ERP-owned sections so Moodle-only success on combined sections never masks ERP errors.
+    const erpPrimarySections = sectionResults.filter((s) => s.source === 'ERP');
 
     const moodleConnected = session.mode === 'live' ? Boolean(session.lmsToken) : true;
     const erpConnected = session.mode === 'live' ? Boolean(session.erpToken) : true;
 
     const moodleHasSynced = lmsSections.some((s) => s.status === 'synced');
-    const erpHasSynced = erpSections.some((s) => s.status === 'synced');
-    const erpFirstError = erpSections.find((s) => s.status === 'error' || s.status === 'stale');
+    const erpHasSynced = erpPrimarySections.some((s) => s.status === 'synced');
+    const erpFirstError = erpPrimarySections.find((s) => s.status === 'error' || s.status === 'stale');
     const lmsFirstError = lmsSections.find((s) => s.status === 'error' || s.status === 'stale');
 
     const report: PortalSyncReport = {

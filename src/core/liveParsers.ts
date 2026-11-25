@@ -140,7 +140,12 @@ export function validateUpstreamBaseUrl(rawUrl: string): string {
     throw new Error(`Blocked private or loopback upstream host: "${parsed.hostname}"`);
   }
 
-  const normalizedPath = parsed.pathname.replace(/\/+$/, '');
+  const normalizedPath = parsed.pathname
+    .replace(/\/+$/, '')
+    .replace(
+      /\/(account\/login|login\/index\.php|login\/token\.php|login|my\/courses\.php|my|student\/dashboard|dashboard|index\.php|index\.html|erp\/api\/v[0-9.]+)$/i,
+      ''
+    );
   return `${parsed.origin}${normalizedPath}`;
 }
 
@@ -184,18 +189,22 @@ export function assertMoodleResponseOk(raw: unknown): void {
       typeof raw.message === 'string' && raw.message.trim().length > 0
         ? stripHtmlToText(raw.message)
         : 'Moodle LMS returned an error.';
-    const isAuthError =
+    // Only token/login/service failures are 401 session errors; accessexception is per-function permission (403)
+    // so callers can fall back to alternative Moodle web-service functions without discarding a valid token.
+    const isTokenInvalid =
       code === 'invalidtoken' ||
-      code === 'accessexception' ||
+      code === 'tokenexpired' ||
       code === 'servicenotavailable' ||
       code === 'invalidlogin' ||
       /invalid token/i.test(message);
+    const isAccessDenied = code === 'accessexception' || code === 'nopermissions';
+    const status = isTokenInvalid ? 401 : isAccessDenied ? 403 : 502;
     throw new LiveUpstreamError(
-      isAuthError ? 401 : 502,
-      isAuthError
+      status,
+      isTokenInvalid
         ? `Moodle rejected the web-service token (${code}): ${message}`
         : `Moodle LMS error (${code}): ${message}`,
-      { code, field: isAuthError ? 'lmsToken' : undefined }
+      { code, field: isTokenInvalid ? 'lmsToken' : undefined }
     );
   }
 }
@@ -341,6 +350,90 @@ export function parseMoodleDeadlines(
   return validateDeadlines(items);
 }
 
+export function parseMoodleAssignments(
+  raw: unknown,
+  courseMap: Map<number, MoodleCourseSummary> = new Map(),
+  minEpochSec = Math.floor(Date.now() / 1000) - 14 * 86400
+): DeadlineItem[] {
+  assertMoodleResponseOk(raw);
+  const courses = isRecord(raw) && Array.isArray(raw.courses) ? raw.courses : [];
+  const items: DeadlineItem[] = [];
+
+  for (const course of courses) {
+    if (!isRecord(course) || !Array.isArray(course.assignments)) continue;
+    const courseId = typeof course.id === 'number' ? course.id : Number(course.id);
+    const mapped = Number.isFinite(courseId) ? courseMap.get(courseId) : undefined;
+    const courseCode =
+      (typeof course.shortname === 'string' && course.shortname.trim()) || mapped?.shortname || undefined;
+    const courseName =
+      (typeof course.fullname === 'string' && stripHtmlToText(course.fullname)) || mapped?.fullname || undefined;
+
+    for (let i = 0; i < course.assignments.length; i += 1) {
+      const assign = course.assignments[i];
+      if (!isRecord(assign)) continue;
+      const dueSec = typeof assign.duedate === 'number' ? assign.duedate : Number(assign.duedate);
+      if (!Number.isFinite(dueSec) || dueSec <= 0 || dueSec < minEpochSec) continue;
+      const title = stripHtmlToText(String(assign.name ?? ''));
+      if (!title) continue;
+      const notes =
+        typeof assign.intro === 'string' ? stripHtmlToText(assign.intro).slice(0, 280) : undefined;
+
+      items.push({
+        id: `moodle-assign-${assign.id ?? `${courseId}-${i}`}`,
+        title,
+        courseCode,
+        courseName,
+        dueAt: new Date(dueSec * 1000).toISOString(),
+        kind: inferDeadlineKindFromMoodle('assign', title),
+        origin: 'LMS',
+        notes: notes || undefined,
+      });
+    }
+  }
+
+  return validateDeadlines(items);
+}
+
+export function parseMoodleQuizzes(
+  raw: unknown,
+  courseMap: Map<number, MoodleCourseSummary> = new Map(),
+  minEpochSec = Math.floor(Date.now() / 1000) - 14 * 86400
+): DeadlineItem[] {
+  assertMoodleResponseOk(raw);
+  const quizzes = isRecord(raw) && Array.isArray(raw.quizzes) ? raw.quizzes : [];
+  const items: DeadlineItem[] = [];
+
+  for (let i = 0; i < quizzes.length; i += 1) {
+    const quiz = quizzes[i];
+    if (!isRecord(quiz)) continue;
+    const dueSec =
+      typeof quiz.timeclose === 'number' && quiz.timeclose > 0
+        ? quiz.timeclose
+        : typeof quiz.timeopen === 'number' && quiz.timeopen > 0
+          ? quiz.timeopen
+          : Number(quiz.timeclose ?? quiz.timeopen);
+    if (!Number.isFinite(dueSec) || dueSec <= 0 || dueSec < minEpochSec) continue;
+    const title = stripHtmlToText(String(quiz.name ?? ''));
+    if (!title) continue;
+    const courseId = typeof quiz.course === 'number' ? quiz.course : Number(quiz.course);
+    const mapped = Number.isFinite(courseId) ? courseMap.get(courseId) : undefined;
+    const notes = typeof quiz.intro === 'string' ? stripHtmlToText(quiz.intro).slice(0, 280) : undefined;
+
+    items.push({
+      id: `moodle-quiz-${quiz.id ?? i}`,
+      title,
+      courseCode: mapped?.shortname,
+      courseName: mapped?.fullname,
+      dueAt: new Date(dueSec * 1000).toISOString(),
+      kind: 'exam',
+      origin: 'LMS',
+      notes: notes || undefined,
+    });
+  }
+
+  return validateDeadlines(items);
+}
+
 function inferNotificationCategory(text: string): NotificationItem['category'] {
   const lower = text.toLowerCase();
   if (/(exam|quiz|hall ticket|grade|result|cat|cae)/.test(lower)) return 'Exam';
@@ -402,9 +495,58 @@ export function parseMoodleNotifications(raw: unknown): NotificationItem[] {
   return validateNotifications(items);
 }
 
+export function parseMoodleForumDiscussions(
+  raw: unknown,
+  courseCode?: string
+): NotificationItem[] {
+  assertMoodleResponseOk(raw);
+  const rows = isRecord(raw) && Array.isArray(raw.discussions) ? raw.discussions : [];
+  const items: NotificationItem[] = [];
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    if (!isRecord(row)) continue;
+    const title = stripHtmlToText(String(row.name ?? row.subject ?? ''));
+    if (!title) continue;
+    const body = stripHtmlToText(String(row.message ?? title)).slice(0, 1500);
+    const summary = (body || title).slice(0, 180);
+    const epochSec =
+      typeof row.timemodified === 'number'
+        ? row.timemodified
+        : typeof row.created === 'number'
+          ? row.created
+          : Number(row.timemodified ?? row.created);
+    const publishedAt =
+      Number.isFinite(epochSec) && epochSec > 0
+        ? new Date(epochSec * 1000).toISOString()
+        : new Date().toISOString();
+
+    items.push({
+      id: `moodle-forum-${row.discussion ?? row.id ?? i}`,
+      title,
+      summary,
+      body: body || title,
+      publishedAt,
+      origin: 'LMS',
+      category: inferNotificationCategory(`${title} ${summary}`),
+      unread: true,
+      courseCode,
+    });
+  }
+
+  return validateNotifications(items);
+}
+
 function unwrapArray(raw: unknown, keys: string[]): unknown[] {
   if (Array.isArray(raw)) return raw;
   if (isRecord(raw)) {
+    if (Array.isArray(raw.responseData)) return raw.responseData as unknown[];
+    if (isRecord(raw.responseData)) {
+      for (const key of keys) {
+        if (Array.isArray(raw.responseData[key])) return raw.responseData[key] as unknown[];
+      }
+      if (Array.isArray(raw.responseData.data)) return raw.responseData.data as unknown[];
+    }
     for (const key of keys) {
       if (Array.isArray(raw[key])) return raw[key] as unknown[];
     }
@@ -419,6 +561,18 @@ function unwrapArray(raw: unknown, keys: string[]): unknown[] {
 
 function unwrapRecord(raw: unknown): Record<string, unknown> {
   if (isRecord(raw)) {
+    if (isRecord(raw.responseData)) {
+      if (Array.isArray(raw.responseData.StudentInfo) && isRecord(raw.responseData.StudentInfo[0])) {
+        return raw.responseData.StudentInfo[0] as Record<string, unknown>;
+      }
+      if (Array.isArray(raw.responseData.studentInfo) && isRecord(raw.responseData.studentInfo[0])) {
+        return raw.responseData.studentInfo[0] as Record<string, unknown>;
+      }
+      return raw.responseData;
+    }
+    if (Array.isArray(raw.responseData) && isRecord(raw.responseData[0])) {
+      return raw.responseData[0] as Record<string, unknown>;
+    }
     if (isRecord(raw.data)) return raw.data;
     if (isRecord(raw.profile)) return raw.profile;
     if (isRecord(raw.student)) return raw.student;
@@ -433,6 +587,9 @@ function pickString(obj: Record<string, unknown>, keys: string[], fallback = '')
     if (typeof val === 'string' && val.trim().length > 0) {
       return stripHtmlToText(val);
     }
+    if (typeof val === 'number' && Number.isFinite(val)) {
+      return String(val);
+    }
   }
   return fallback;
 }
@@ -442,11 +599,41 @@ function pickNumber(obj: Record<string, unknown>, keys: string[], fallback = 0):
     const val = obj[key];
     if (typeof val === 'number' && Number.isFinite(val)) return val;
     if (typeof val === 'string' && val.trim() !== '') {
-      const parsed = Number(val);
+      const cleaned = val.trim().replace(/%$/, '');
+      const parsed = Number(cleaned);
       if (Number.isFinite(parsed)) return parsed;
     }
   }
   return fallback;
+}
+
+function parseFlexibleDateToIso(rawDate: string, fallbackIso?: string): string | null {
+  const trimmed = rawDate.trim();
+  if (!trimmed) return fallbackIso ?? null;
+
+  // Handle DD/MM/YYYY or DD-MM-YYYY (common in Sathyabama ERP responses)
+  const dmyMatch = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i.exec(
+    trimmed
+  );
+  if (dmyMatch) {
+    const day = Number(dmyMatch[1]);
+    const month = Number(dmyMatch[2]);
+    const year = Number(dmyMatch[3]);
+    let hour = dmyMatch[4] ? Number(dmyMatch[4]) : 9;
+    const min = dmyMatch[5] ? Number(dmyMatch[5]) : 0;
+    const sec = dmyMatch[6] ? Number(dmyMatch[6]) : 0;
+    const ampm = dmyMatch[7]?.toUpperCase();
+    if (ampm === 'PM' && hour < 12) hour += 12;
+    if (ampm === 'AM' && hour === 12) hour = 0;
+    const dt = new Date(Date.UTC(year, month - 1, day, hour, min, sec));
+    if (!Number.isNaN(dt.getTime())) return dt.toISOString();
+  }
+
+  const parsed = Date.parse(trimmed);
+  if (!Number.isNaN(parsed)) {
+    return new Date(parsed).toISOString();
+  }
+  return fallbackIso ?? null;
 }
 
 export function parseErpProfile(
@@ -456,45 +643,110 @@ export function parseErpProfile(
   lmsConnected = false
 ): StudentProfile {
   const rec = unwrapRecord(raw);
-  const regNo = pickString(rec, ['registerNumber', 'regNo', 'reg_no', 'rollNumber', 'id'], fallbackRegisterNumber)
-    .toUpperCase();
-  const name = pickString(rec, ['name', 'fullName', 'studentName'], fallbackName?.trim() || regNo);
-  const semesterRaw = pickNumber(rec, ['semester', 'currentSemester', 'sem'], 1);
+  const regNo = pickString(
+    rec,
+    ['registerNumber', 'RegisterNumber', 'regNo', 'RegNo', 'reg_no', 'rollNumber', 'id'],
+    fallbackRegisterNumber
+  ).toUpperCase();
+  const name = pickString(
+    rec,
+    ['name', 'fullName', 'studentName', 'StudentName', 'FullName'],
+    fallbackName?.trim() || regNo
+  );
+  const semesterRaw = pickNumber(rec, ['semester', 'Semester', 'currentSemester', 'CurrentSemester', 'sem'], 1);
   const semester = Math.min(12, Math.max(1, Math.round(semesterRaw)));
 
   return validateProfile({
     registerNumber: regNo,
     name,
-    program: pickString(rec, ['program', 'degree', 'course'], 'B.E. / B.Tech'),
-    department: pickString(rec, ['department', 'branch', 'dept'], 'Sathyabama Institute of Science and Technology'),
+    program: pickString(
+      rec,
+      ['program', 'degree', 'course', 'CourseName', 'DegreeName', 'ProgrammeName'],
+      'B.E. / B.Tech'
+    ),
+    department: pickString(
+      rec,
+      ['department', 'branch', 'dept', 'ProgrammeName', 'DepartmentName', 'BranchName'],
+      'Sathyabama Institute of Science and Technology'
+    ),
     semester,
-    batch: pickString(rec, ['batch', 'academicYear', 'year'], 'Live'),
-    section: pickString(rec, ['section', 'sec'], 'A'),
-    email: pickString(rec, ['email', 'mail'], `${regNo.toLowerCase()}@sathyabama.ac.in`),
-    advisor: pickString(rec, ['advisor', 'facultyAdvisor', 'mentor'], 'Assigned Faculty'),
+    batch: pickString(rec, ['batch', 'Batch', 'academicYear', 'AcademicYear', 'year', 'YearofStudy'], 'Live'),
+    section: pickString(rec, ['section', 'SectionName', 'Section', 'sec'], 'A'),
+    email: pickString(
+      rec,
+      ['email', 'OfficialEmail', 'Email', 'StudentEmail', 'mail'],
+      `${regNo.toLowerCase()}@sathyabama.ac.in`
+    ),
+    advisor: pickString(
+      rec,
+      ['advisor', 'facultyAdvisor', 'mentor', 'MentorName', 'FacultyAdvisor', 'ClassAdvisor'],
+      'Assigned Faculty'
+    ),
     erpConnected: true,
     lmsConnected,
   });
 }
 
 export function parseErpAttendance(raw: unknown): AttendanceSubject[] {
-  const rows = unwrapArray(raw, ['attendance', 'subjects', 'courses', 'items', 'records', 'data']);
+  const rows = unwrapArray(raw, [
+    'attendance',
+    'subjects',
+    'courses',
+    'items',
+    'records',
+    'AttendanceDetails',
+    'data',
+  ]);
   const nowIso = new Date().toISOString();
 
   const mapped = rows
     .filter(isRecord)
     .map((item, idx) => {
-      const attended = Math.max(0, Math.round(pickNumber(item, ['attended', 'present', 'classesAttended', 'hoursPresent'], 0)));
-      const rawTotal = Math.max(0, Math.round(pickNumber(item, ['total', 'conducted', 'totalClasses', 'hoursConducted'], attended)));
+      const attended = Math.max(
+        0,
+        Math.round(
+          pickNumber(
+            item,
+            ['attended', 'present', 'classesAttended', 'hoursPresent', 'TotalPresent', 'PresentHours', 'Present'],
+            0
+          )
+        )
+      );
+      const absent = Math.max(
+        0,
+        Math.round(pickNumber(item, ['absent', 'TotalAbsent', 'AbsentHours', 'Absent'], 0))
+      );
+      const rawTotal = Math.max(
+        0,
+        Math.round(
+          pickNumber(
+            item,
+            ['total', 'conducted', 'totalClasses', 'hoursConducted', 'TotalHours', 'ConductedHours', 'Total'],
+            attended + absent
+          )
+        )
+      );
       const total = Math.max(attended, rawTotal);
-      const lastUpdatedRaw = pickString(item, ['lastUpdated', 'updatedAt', 'asOf'], nowIso);
-      const lastUpdated = Number.isNaN(Date.parse(lastUpdatedRaw)) ? nowIso : lastUpdatedRaw;
+      const lastUpdatedRaw = pickString(item, ['lastUpdated', 'updatedAt', 'asOf', 'UpdatedDate'], nowIso);
+      const lastUpdated = parseFlexibleDateToIso(lastUpdatedRaw, nowIso) ?? nowIso;
 
       return {
-        courseCode: pickString(item, ['courseCode', 'code', 'subjectCode'], `SUB${idx + 1}`),
-        courseName: pickString(item, ['courseName', 'subjectName', 'subject', 'name'], `Course ${idx + 1}`),
-        faculty: pickString(item, ['faculty', 'facultyName', 'instructor', 'staff'], 'Faculty'),
-        credits: Math.min(12, Math.max(0, pickNumber(item, ['credits', 'credit'], 3))),
+        courseCode: pickString(
+          item,
+          ['courseCode', 'code', 'subjectCode', 'SubjectCode', 'CourseCode'],
+          `SUB${idx + 1}`
+        ),
+        courseName: pickString(
+          item,
+          ['courseName', 'subjectName', 'subject', 'name', 'SubjectName', 'CourseName'],
+          `Course ${idx + 1}`
+        ),
+        faculty: pickString(
+          item,
+          ['faculty', 'facultyName', 'instructor', 'staff', 'StaffName', 'FacultyName'],
+          'Faculty'
+        ),
+        credits: Math.min(12, Math.max(0, pickNumber(item, ['credits', 'credit', 'Credits', 'Credit'], 3))),
         attended,
         total,
         lastUpdated,
@@ -505,40 +757,63 @@ export function parseErpAttendance(raw: unknown): AttendanceSubject[] {
 }
 
 const DAY_ALIASES: Record<string, Weekday> = {
+  '1': 'Mon',
   mon: 'Mon',
   monday: 'Mon',
+  '2': 'Tue',
   tue: 'Tue',
   tues: 'Tue',
   tuesday: 'Tue',
+  '3': 'Wed',
   wed: 'Wed',
   wednesday: 'Wed',
+  '4': 'Thu',
   thu: 'Thu',
   thur: 'Thu',
   thurs: 'Thu',
   thursday: 'Thu',
+  '5': 'Fri',
   fri: 'Fri',
   friday: 'Fri',
 };
 
 function normalizeHHMM(input: string, fallback: string): string {
-  const match = /^(\d{1,2}):(\d{2})/.exec(input.trim());
+  const trimmed = input.trim();
+  const match = /^(\d{1,2}):(\d{2})(?::\d{2})?\s*(am|pm)?/i.exec(trimmed);
   if (!match) return fallback;
-  const hh = String(Math.min(23, Math.max(0, Number(match[1])))).padStart(2, '0');
-  const mm = String(Math.min(59, Math.max(0, Number(match[2])))).padStart(2, '0');
+  let hhNum = Number(match[1]);
+  const mmNum = Math.min(59, Math.max(0, Number(match[2])));
+  const ampm = match[3]?.toLowerCase();
+  if (ampm === 'pm' && hhNum < 12) hhNum += 12;
+  if (ampm === 'am' && hhNum === 12) hhNum = 0;
+  const hh = String(Math.min(23, Math.max(0, hhNum))).padStart(2, '0');
+  const mm = String(mmNum).padStart(2, '0');
   return `${hh}:${mm}`;
 }
 
 export function parseErpTimetable(raw: unknown): TimetableSlot[] {
-  const rows = unwrapArray(raw, ['timetable', 'slots', 'schedule', 'items', 'data']);
+  const rows = unwrapArray(raw, ['timetable', 'slots', 'schedule', 'items', 'TimeTableArray', 'data']);
   const mapped: TimetableSlot[] = [];
 
   rows.forEach((item, idx) => {
     if (!isRecord(item)) return;
-    const rawDay = pickString(item, ['day', 'weekday', 'dayName'], '').toLowerCase();
+    const rawDay = pickString(item, ['day', 'weekday', 'dayName', 'DayName', 'DayId', 'dayId'], '').toLowerCase();
     const day = DAY_ALIASES[rawDay];
     if (!day) return;
 
-    const rawKind = pickString(item, ['kind', 'type', 'sessionType'], 'Lecture').toLowerCase();
+    const courseCode = pickString(
+      item,
+      ['courseCode', 'code', 'subjectCode', 'SubjectCode', 'CourseCode'],
+      ''
+    );
+    const courseName = pickString(
+      item,
+      ['courseName', 'subjectName', 'subject', 'name', 'SubjectName', 'CourseName'],
+      ''
+    );
+    if (!courseCode && !courseName) return;
+
+    const rawKind = pickString(item, ['kind', 'type', 'sessionType', 'HourType', 'SessionType'], 'Lecture').toLowerCase();
     const kind: TimetableSlot['kind'] =
       rawKind.includes('lab') || rawKind.includes('practical')
         ? 'Lab'
@@ -547,14 +822,14 @@ export function parseErpTimetable(raw: unknown): TimetableSlot[] {
           : 'Lecture';
 
     mapped.push({
-      id: pickString(item, ['id', 'slotId'], `erp-slot-${day}-${idx}`),
+      id: pickString(item, ['id', 'slotId', 'TimeTableDetailId', 'TimeTableId'], `erp-slot-${day}-${idx}`),
       day,
-      startTime: normalizeHHMM(pickString(item, ['startTime', 'start', 'from'], '09:00'), '09:00'),
-      endTime: normalizeHHMM(pickString(item, ['endTime', 'end', 'to'], '10:00'), '10:00'),
-      courseCode: pickString(item, ['courseCode', 'code', 'subjectCode'], `SUB${idx + 1}`),
-      courseName: pickString(item, ['courseName', 'subjectName', 'subject', 'name'], `Course ${idx + 1}`),
-      room: pickString(item, ['room', 'roomNo', 'venue', 'hall'], 'Campus'),
-      faculty: pickString(item, ['faculty', 'facultyName', 'instructor'], 'Faculty'),
+      startTime: normalizeHHMM(pickString(item, ['startTime', 'start', 'from', 'TimeFrom'], '09:00'), '09:00'),
+      endTime: normalizeHHMM(pickString(item, ['endTime', 'end', 'to', 'TimeTo'], '10:00'), '10:00'),
+      courseCode: courseCode || `SUB${idx + 1}`,
+      courseName: courseName || courseCode || `Course ${idx + 1}`,
+      room: pickString(item, ['room', 'roomNo', 'RoomNo', 'ClassRoomName', 'venue', 'hall'], 'Campus'),
+      faculty: pickString(item, ['faculty', 'facultyName', 'StaffName', 'FacultyName', 'instructor'], 'Faculty'),
       kind,
     });
   });
@@ -564,12 +839,26 @@ export function parseErpTimetable(raw: unknown): TimetableSlot[] {
 
 const VALID_GRADES = new Set<GradeLetter>(['O', 'A+', 'A', 'B+', 'B', 'C', 'RA']);
 
-function normalizeGrade(raw: string): GradeLetter {
+function normalizeGrade(raw: string, totalMark?: number, resultStatus?: string): GradeLetter {
   const upper = raw.trim().toUpperCase();
   if (VALID_GRADES.has(upper as GradeLetter)) return upper as GradeLetter;
   if (upper === 'S' || upper === 'A++') return 'O';
   if (upper === 'D' || upper === 'E' || upper === 'P') return 'C';
-  if (upper === 'F' || upper === 'U' || upper === 'AB' || upper === 'W') return 'RA';
+  if (upper === 'F' || upper === 'U' || upper === 'AB' || upper === 'W' || upper === 'FAIL' || upper === 'ARREAR') {
+    return 'RA';
+  }
+  if (resultStatus && /^(ra|fail|ab|absent|arrear)$/i.test(resultStatus.trim())) {
+    return 'RA';
+  }
+  if (typeof totalMark === 'number' && Number.isFinite(totalMark) && totalMark > 0) {
+    if (totalMark >= 90) return 'O';
+    if (totalMark >= 80) return 'A+';
+    if (totalMark >= 70) return 'A';
+    if (totalMark >= 60) return 'B+';
+    if (totalMark >= 50) return 'B';
+    if (totalMark >= 40) return 'C';
+    return 'RA';
+  }
   return 'A';
 }
 
@@ -581,43 +870,103 @@ export function parseErpResults(raw: unknown): ResultsPayload {
       ? rec.results
       : [];
 
-  const semesters: SemesterResult[] = rawSemesters
-    .filter(isRecord)
-    .map((sem, sIdx) => {
-      const rawCourses = Array.isArray(sem.courses)
-        ? sem.courses
-        : Array.isArray(sem.subjects)
-          ? sem.subjects
-          : [];
-      const courses: CourseGrade[] = rawCourses.filter(isRecord).map((c, cIdx) => {
-        const grade = normalizeGrade(pickString(c, ['grade', 'letterGrade'], 'A'));
-        const gradePoints = pickNumber(c, ['gradePoints', 'points'], GRADE_POINTS[grade]);
+  let semesters: SemesterResult[] = [];
+
+  if (rawSemesters.length > 0) {
+    semesters = rawSemesters
+      .filter(isRecord)
+      .map((sem, sIdx) => {
+        const rawCourses = Array.isArray(sem.courses)
+          ? sem.courses
+          : Array.isArray(sem.subjects)
+            ? sem.subjects
+            : [];
+        const courses: CourseGrade[] = rawCourses.filter(isRecord).map((c, cIdx) => {
+          const totalMark = pickNumber(c, ['TotalMark', 'totalMark', 'marks'], -1);
+          const resultStatus = pickString(c, ['Result', 'result', 'status'], '');
+          const grade = normalizeGrade(
+            pickString(c, ['grade', 'Grade', 'letterGrade'], ''),
+            totalMark >= 0 ? totalMark : undefined,
+            resultStatus
+          );
+          const gradePoints = pickNumber(c, ['gradePoints', 'GradePoint', 'points'], GRADE_POINTS[grade]);
+          return {
+            courseCode: pickString(c, ['courseCode', 'code', 'subjectCode', 'SubjectCode'], `S${sIdx + 1}C${cIdx + 1}`),
+            courseName: pickString(c, ['courseName', 'subjectName', 'SubjectName', 'name'], `Course ${cIdx + 1}`),
+            credits: Math.min(12, Math.max(0, pickNumber(c, ['credits', 'credit', 'Credits', 'Credit'], 3))),
+            grade,
+            gradePoints: Math.min(10, Math.max(0, gradePoints)),
+          };
+        });
+
+        const computedCredits = courses.reduce((sum, c) => sum + c.credits, 0);
+        const computedSgpa =
+          computedCredits > 0
+            ? Math.round(
+                (courses.reduce((sum, c) => sum + c.credits * c.gradePoints, 0) / computedCredits) * 100
+              ) / 100
+            : 0;
+        const semNum = Math.min(12, Math.max(1, Math.round(pickNumber(sem, ['semester', 'Semester', 'sem'], sIdx + 1))));
+
         return {
-          courseCode: pickString(c, ['courseCode', 'code', 'subjectCode'], `S${sIdx + 1}C${cIdx + 1}`),
-          courseName: pickString(c, ['courseName', 'subjectName', 'name'], `Course ${cIdx + 1}`),
-          credits: Math.min(12, Math.max(0, pickNumber(c, ['credits', 'credit'], 3))),
-          grade,
-          gradePoints: Math.min(10, Math.max(0, gradePoints)),
+          semester: semNum,
+          termLabel: pickString(sem, ['termLabel', 'term', 'session', 'AcademicYear'], `Semester ${semNum}`),
+          sgpa: Math.min(10, Math.max(0, pickNumber(sem, ['sgpa', 'SGPA', 'gpa'], computedSgpa))),
+          credits: Math.min(40, Math.max(0, pickNumber(sem, ['credits', 'totalCredits', 'TotalCredits'], computedCredits))),
+          courses,
         };
       });
+  } else {
+    // Support Sathyabama ERP flat SemResult / consolidateMarks arrays and group them by Semester
+    const flatRows = unwrapArray(raw, ['SemResult', 'consolidateMarks', 'marks', 'data']);
+    const bySemester = new Map<number, { termLabel: string; courses: CourseGrade[] }>();
 
-      const computedCredits = courses.reduce((sum, c) => sum + c.credits, 0);
-      const computedSgpa =
-        computedCredits > 0
-          ? Math.round(
-              (courses.reduce((sum, c) => sum + c.credits * c.gradePoints, 0) / computedCredits) * 100
-            ) / 100
-          : 0;
-      const semNum = Math.min(12, Math.max(1, Math.round(pickNumber(sem, ['semester', 'sem'], sIdx + 1))));
-
-      return {
-        semester: semNum,
-        termLabel: pickString(sem, ['termLabel', 'term', 'session'], `Semester ${semNum}`),
-        sgpa: Math.min(10, Math.max(0, pickNumber(sem, ['sgpa', 'gpa'], computedSgpa))),
-        credits: Math.min(40, Math.max(0, pickNumber(sem, ['credits', 'totalCredits'], computedCredits))),
-        courses,
+    flatRows.filter(isRecord).forEach((row, idx) => {
+      const semNum = Math.min(12, Math.max(1, Math.round(pickNumber(row, ['Semester', 'semester', 'Sem', 'sem'], 1))));
+      const totalMark = pickNumber(row, ['TotalMark', 'totalMark', 'Total', 'MarkObtained'], -1);
+      const resultStatus = pickString(row, ['Result', 'result', 'Status'], '');
+      const grade = normalizeGrade(
+        pickString(row, ['Grade', 'grade', 'MarkGrade', 'letterGrade'], ''),
+        totalMark >= 0 ? totalMark : undefined,
+        resultStatus
+      );
+      const gradePoints = pickNumber(row, ['GradePoint', 'gradePoints', 'points'], GRADE_POINTS[grade]);
+      const course: CourseGrade = {
+        courseCode: pickString(row, ['SubjectCode', 'courseCode', 'code'], `S${semNum}C${idx + 1}`),
+        courseName: pickString(row, ['SubjectName', 'SubjectTitle', 'courseName', 'name'], `Course ${idx + 1}`),
+        credits: Math.min(12, Math.max(0, pickNumber(row, ['Credit', 'Credits', 'MarkCredit', 'credits'], 3))),
+        grade,
+        gradePoints: Math.min(10, Math.max(0, gradePoints)),
       };
+
+      const existing = bySemester.get(semNum);
+      if (existing) {
+        existing.courses.push(course);
+      } else {
+        const term = pickString(row, ['AcademicMonthYear', 'ExamSession', 'AcademicYear'], `Semester ${semNum}`);
+        bySemester.set(semNum, { termLabel: term, courses: [course] });
+      }
     });
+
+    semesters = Array.from(bySemester.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([semNum, entry]) => {
+        const credits = entry.courses.reduce((sum, c) => sum + c.credits, 0);
+        const sgpa =
+          credits > 0
+            ? Math.round(
+                (entry.courses.reduce((sum, c) => sum + c.credits * c.gradePoints, 0) / credits) * 100
+              ) / 100
+            : 0;
+        return {
+          semester: semNum,
+          termLabel: entry.termLabel,
+          sgpa,
+          credits,
+          courses: entry.courses,
+        };
+      });
+  }
 
   const rawCurrent = Array.isArray(rec.currentCourses)
     ? rec.currentCourses
@@ -626,49 +975,50 @@ export function parseErpResults(raw: unknown): ResultsPayload {
       : [];
 
   const currentCourses: PlannedCourse[] = rawCurrent.filter(isRecord).map((c, idx) => ({
-    courseCode: pickString(c, ['courseCode', 'code', 'subjectCode'], `CURR${idx + 1}`),
-    courseName: pickString(c, ['courseName', 'subjectName', 'name'], `Course ${idx + 1}`),
-    credits: Math.min(12, Math.max(0, pickNumber(c, ['credits', 'credit'], 3))),
-    expectedGrade: normalizeGrade(pickString(c, ['expectedGrade', 'grade'], 'A')),
+    courseCode: pickString(c, ['courseCode', 'code', 'subjectCode', 'SubjectCode'], `CURR${idx + 1}`),
+    courseName: pickString(c, ['courseName', 'subjectName', 'SubjectName', 'name'], `Course ${idx + 1}`),
+    credits: Math.min(12, Math.max(0, pickNumber(c, ['credits', 'credit', 'Credits', 'Credit'], 3))),
+    expectedGrade: normalizeGrade(pickString(c, ['expectedGrade', 'grade', 'Grade'], 'A')),
   }));
 
   const inferredSem = semesters.length > 0 ? Math.min(12, semesters[semesters.length - 1].semester + 1) : 1;
   const currentSemester = Math.min(
     12,
-    Math.max(1, Math.round(pickNumber(rec, ['currentSemester', 'semester'], inferredSem)))
+    Math.max(1, Math.round(pickNumber(rec, ['currentSemester', 'semester', 'Semester'], inferredSem)))
   );
 
   return validateResults({ semesters, currentSemester, currentCourses });
 }
 
 export function parseErpDeadlines(raw: unknown): DeadlineItem[] {
-  const rows = unwrapArray(raw, ['deadlines', 'items', 'events', 'exams', 'fees', 'data']);
+  const rows = unwrapArray(raw, ['deadlines', 'items', 'events', 'exams', 'fees', 'EventCalendar', 'data']);
   const items: DeadlineItem[] = [];
 
   rows.forEach((item, idx) => {
     if (!isRecord(item)) return;
-    const title = pickString(item, ['title', 'name', 'description']);
-    const dueRaw = pickString(item, ['dueAt', 'dueDate', 'date', 'deadline']);
-    if (!title || !dueRaw || Number.isNaN(Date.parse(dueRaw))) return;
+    const title = pickString(item, ['title', 'name', 'EventTitle', 'EventDescription', 'description']);
+    const dueRaw = pickString(item, ['dueAt', 'dueDate', 'EventDate', 'StartDate', 'date', 'deadline']);
+    const dueIso = parseFlexibleDateToIso(dueRaw);
+    if (!title || !dueIso) return;
 
-    const rawKind = pickString(item, ['kind', 'type', 'category'], 'assignment').toLowerCase();
-    const kind: DeadlineKind = rawKind.includes('exam')
+    const rawKind = pickString(item, ['kind', 'type', 'category', 'EventType'], title).toLowerCase();
+    const kind: DeadlineKind = /(exam|cat|cae|ese|test|viva)/.test(rawKind)
       ? 'exam'
-      : rawKind.includes('fee')
+      : /(fee|tuition|payment|invoice)/.test(rawKind)
         ? 'fee'
         : 'assignment';
-    const amount = pickNumber(item, ['amountInr', 'amount'], -1);
+    const amount = pickNumber(item, ['amountInr', 'amount', 'Amount'], -1);
 
     items.push({
-      id: pickString(item, ['id'], `erp-dl-${idx}`),
+      id: pickString(item, ['id', 'EventCalendarId'], `erp-dl-${idx}`),
       title,
-      courseCode: pickString(item, ['courseCode', 'code']) || undefined,
-      courseName: pickString(item, ['courseName', 'subject']) || undefined,
-      dueAt: new Date(dueRaw).toISOString(),
+      courseCode: pickString(item, ['courseCode', 'SubjectCode', 'code']) || undefined,
+      courseName: pickString(item, ['courseName', 'SubjectName', 'subject']) || undefined,
+      dueAt: dueIso,
       kind,
       origin: 'ERP',
       amountInr: amount > 0 ? amount : undefined,
-      notes: pickString(item, ['notes', 'remarks']) || undefined,
+      notes: pickString(item, ['notes', 'remarks', 'Remarks']) || undefined,
     });
   });
 
@@ -682,25 +1032,26 @@ export function parseErpNotifications(raw: unknown): NotificationItem[] {
 
   rows.forEach((item, idx) => {
     if (!isRecord(item)) return;
-    const title = pickString(item, ['title', 'subject', 'heading']);
-    if (!title) return;
-    const body = pickString(item, ['body', 'message', 'content', 'description'], title);
+    const rawNotice = pickString(item, ['title', 'subject', 'heading', 'Title', 'NotificationTitle', 'Notification']);
+    if (!rawNotice) return;
+    const body = pickString(item, ['body', 'message', 'content', 'description', 'Notification', 'Message'], rawNotice);
+    const title = rawNotice.length > 110 ? `${rawNotice.slice(0, 107)}...` : rawNotice;
     const summary = pickString(item, ['summary', 'excerpt'], body.slice(0, 180));
-    const publishedRaw = pickString(item, ['publishedAt', 'createdAt', 'date'], nowIso);
-    const publishedAt = Number.isNaN(Date.parse(publishedRaw))
-      ? nowIso
-      : new Date(publishedRaw).toISOString();
+    const datePart = pickString(item, ['publishedAt', 'createdAt', 'CreatedDate', 'Date', 'date'], '');
+    const timePart = pickString(item, ['Time', 'time'], '');
+    const combinedDate = datePart && timePart ? `${datePart} ${timePart}` : datePart;
+    const publishedAt = parseFlexibleDateToIso(combinedDate, nowIso) ?? nowIso;
 
     items.push({
-      id: pickString(item, ['id'], `erp-notif-${idx}`),
+      id: pickString(item, ['id', 'NotificationId'], `erp-notif-${idx}`),
       title,
       summary,
       body,
       publishedAt,
       origin: 'ERP',
-      category: inferNotificationCategory(`${title} ${pickString(item, ['category'])}`),
-      unread: typeof item.unread === 'boolean' ? item.unread : true,
-      courseCode: pickString(item, ['courseCode', 'code']) || undefined,
+      category: inferNotificationCategory(`${title} ${pickString(item, ['category', 'Category'])}`),
+      unread: typeof item.unread === 'boolean' ? item.unread : item.IsViewed === 1 ? false : true,
+      courseCode: pickString(item, ['courseCode', 'SubjectCode', 'code']) || undefined,
     });
   });
 

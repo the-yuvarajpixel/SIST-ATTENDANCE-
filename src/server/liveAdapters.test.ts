@@ -8,6 +8,8 @@ import {
   fetchLiveDeadlines,
   fetchLiveNotifications,
   fetchLiveProfile,
+  fetchLiveResults,
+  fetchLiveTimetable,
   getLiveAdapterConfig,
   probeUpstreamReachability,
   verifyErpToken,
@@ -145,28 +147,193 @@ test('verifyErpToken sends Bearer header for tokens and Cookie header for sessio
   const mockFetch: typeof fetch = async (_input, init) => {
     seenHeaders.push((init?.headers ?? {}) as Record<string, string>);
     return jsonResponse({
-      registerNumber: '42110482',
-      name: 'Kavya Nair',
-      semester: 6,
+      status: 1,
+      responseData: {
+        StudentInfo: [
+          {
+            StudentId: 7742,
+            RegisterNumber: '42110482',
+            StudentName: 'Kavya Nair',
+            Semester: 6,
+          },
+        ],
+      },
     });
   };
 
+  const jwtPayload = Buffer.from(JSON.stringify({ StudentId: 7742 })).toString('base64url');
+  const sampleJwt = `eyJhbGciOiJIUzI1NiJ9.${jwtPayload}.sig`;
   const env = { ERP_BASE_URL: 'https://erp.sathyabama.ac.in' };
-  await verifyErpToken('eyJhbGciOiJIUzI1NiJ9.token', '42110482', undefined, false, {
+
+  const prof1 = await verifyErpToken(sampleJwt, '42110482', undefined, false, {
     fetchImpl: mockFetch,
     env,
   });
   await verifyErpToken('PHPSESSID=abc123456789', '42110482', undefined, false, {
     fetchImpl: mockFetch,
-    env,
+    env: { ...env, ERP_PROFILE_PATH: '/api/student/profile' },
   });
 
-  assert.equal(seenHeaders[0].Authorization, 'Bearer eyJhbGciOiJIUzI1NiJ9.token');
-  assert.equal(seenHeaders[0].Token, 'eyJhbGciOiJIUzI1NiJ9.token');
+  assert.equal(prof1.erpStudentId, '7742');
+  assert.equal(prof1.name, 'Kavya Nair');
+  assert.equal(seenHeaders[0].Authorization, `Bearer ${sampleJwt}`);
+  assert.equal(seenHeaders[0].Token, sampleJwt);
   assert.equal(seenHeaders[0].Cookie, undefined);
   assert.equal(seenHeaders[1].Cookie, 'PHPSESSID=abc123456789');
   assert.equal(seenHeaders[1].Authorization, undefined);
   assert.equal(seenHeaders[1].Token, undefined);
+});
+
+test('Sathyabama ERP v1.0 POST sync parses profile, attendance, timetable, results, calendar, and notifications', async () => {
+  const jwtPayload = Buffer.from(JSON.stringify({ StudentId: 8821 })).toString('base64url');
+  const session: StoredSession = {
+    registerNumber: '42110482',
+    name: 'Kavya Nair',
+    mode: 'live',
+    erpToken: `eyJhbGciOiJIUzI1NiJ9.${jwtPayload}.sig`,
+    erpStudentId: '8821',
+    exp: Date.now() + 60_000,
+  };
+
+  const mockFetch: typeof fetch = async (input, init) => {
+    const url = String(input);
+    assert.equal(init?.method, 'POST');
+    if (url.endsWith('/erp/api/v1.0/MasterStudent/view')) {
+      return jsonResponse({
+        status: 1,
+        responseData: {
+          StudentInfo: [
+            {
+              StudentId: 8821,
+              RegisterNumber: '42110482',
+              StudentName: 'Kavya Nair',
+              DegreeName: 'B.E.',
+              ProgrammeName: 'Computer Science and Engineering',
+              Semester: 6,
+              YearofStudy: 3,
+              Batch: '2022-2026',
+              Section: 'A',
+              DegreeId: 1,
+              CourseId: 2,
+              ProgrammeId: 3,
+            },
+          ],
+        },
+      });
+    }
+    if (url.endsWith('/erp/api/v1.0/StudentAttendanceHourly/getStudentAcademicHourwise')) {
+      return jsonResponse({
+        status: 1,
+        responseData: [
+          {
+            SubjectCode: 'SCS1302',
+            SubjectName: 'Computer Networks',
+            TotalHours: 40,
+            TotalPresent: 34,
+            TotalAbsent: 6,
+            Percentage: '85.00',
+          },
+        ],
+      });
+    }
+    if (url.endsWith('/erp/api/v1.0/TimetableDetails/getProgrammeSectionAndTimeSetbyCourse')) {
+      return jsonResponse({
+        status: 1,
+        responseData: [{ TimeTableId: 55, ProgrammeSectionId: 14 }],
+      });
+    }
+    if (url.endsWith('/erp/api/v1.0/TimetableDetails/getdatabyprogramme')) {
+      return jsonResponse({
+        status: 1,
+        responseData: [
+          {
+            DayId: 1,
+            TimeFrom: '09:00:00',
+            TimeTo: '10:00:00',
+            SubjectCode: 'SCS1302',
+            SubjectName: 'Computer Networks',
+            HourType: 'Lecture',
+          },
+        ],
+      });
+    }
+    if (url.endsWith('/erp/api/v1.0/MasterStudent/studentSemesterListByRegNo')) {
+      return jsonResponse({
+        status: 1,
+        responseData: [{ AcademicMonthId: 11, AcademicYear: '2025-2026', Semester: 5 }],
+      });
+    }
+    if (url.endsWith('/erp/api/v1.0/ResultMark/studentResult')) {
+      return jsonResponse({
+        status: 1,
+        responseData: {
+          SemResult: [
+            {
+              SubjectCode: 'SCS1201',
+              SubjectName: 'Operating Systems',
+              Semester: 5,
+              InternalMark: 44,
+              ExternalMark: 48,
+              TotalMark: 92,
+              Result: 'Pass',
+              Credit: 4,
+            },
+          ],
+        },
+      });
+    }
+    if (url.endsWith('/erp/api/v1.0/EventCalendar/listStudent')) {
+      return jsonResponse({
+        status: 1,
+        responseData: [
+          { EventCalendarId: 99, EventDescription: 'CAE 2 Examination Starts', EventDate: '28/11/2026' },
+        ],
+      });
+    }
+    if (url.endsWith('/erp/api/v1.0/Notifications/student')) {
+      return jsonResponse({
+        status: 1,
+        responseData: {
+          count: 1,
+          data: [
+            {
+              NotificationId: 401,
+              Notification: '<p>Semester VI hall tickets are now available.</p>',
+              Date: '25/11/2026',
+              Time: '10:30 AM',
+            },
+          ],
+        },
+      });
+    }
+    return jsonResponse({}, 404);
+  };
+
+  const deps = { fetchImpl: mockFetch, env: { ERP_BASE_URL: 'https://erp.sathyabama.ac.in' } };
+  const [profile, attendance, timetable, results, deadlines, notifications] = await Promise.all([
+    fetchLiveProfile(session, deps),
+    fetchLiveAttendance(session, deps),
+    fetchLiveTimetable(session, deps),
+    fetchLiveResults(session, deps),
+    fetchLiveDeadlines(session, deps),
+    fetchLiveNotifications(session, deps),
+  ]);
+
+  assert.equal(profile.name, 'Kavya Nair');
+  assert.equal(profile.semester, 6);
+  assert.equal(attendance.length, 1);
+  assert.equal(attendance[0].courseCode, 'SCS1302');
+  assert.equal(attendance[0].attended, 34);
+  assert.equal(attendance[0].total, 40);
+  assert.equal(timetable.length, 1);
+  assert.equal(timetable[0].day, 'Mon');
+  assert.equal(timetable[0].startTime, '09:00');
+  assert.equal(results.semesters.length, 1);
+  assert.equal(results.semesters[0].courses[0].grade, 'O');
+  assert.equal(deadlines.length, 1);
+  assert.equal(deadlines[0].kind, 'exam');
+  assert.equal(notifications.length, 1);
+  assert.match(notifications[0].title, /hall tickets/i);
 });
 
 test('LMS-only live session fetches Moodle profile, deadlines, and notifications while ERP sections fail cleanly', async () => {
@@ -179,6 +346,8 @@ test('LMS-only live session fetches Moodle profile, deadlines, and notifications
     exp: Date.now() + 60_000,
   };
 
+  const futureSec = Math.floor(Date.now() / 1000) + 5 * 86400;
+
   const mockFetch: typeof fetch = async (_input, init) => {
     const params = new URLSearchParams(String(init?.body ?? ''));
     const fn = params.get('wsfunction');
@@ -189,13 +358,41 @@ test('LMS-only live session fetches Moodle profile, deadlines, and notifications
       return jsonResponse([{ id: 12, shortname: 'SCS1302', fullname: 'Computer Networks' }]);
     }
     if (fn === 'core_calendar_get_action_events_by_timesort') {
+      // Simulate restricted Moodle function — must NOT abort fallback to mod_assign_get_assignments!
+      return jsonResponse({ exception: 'webservice_access_exception', errorcode: 'accessexception', message: 'Access control exception' });
+    }
+    if (fn === 'core_calendar_get_calendar_upcoming_view') {
+      return jsonResponse({ events: [] });
+    }
+    if (fn === 'mod_assign_get_assignments') {
       return jsonResponse({
-        events: [{ id: 1, name: 'Lab 4 Submission', modulename: 'assign', courseid: 12, timesort: 1796000000 }],
+        courses: [
+          {
+            id: 12,
+            shortname: 'SCS1302',
+            fullname: 'Computer Networks',
+            assignments: [{ id: 44, name: 'Lab 4 Submission', duedate: futureSec, intro: '<p>Upload packet capture</p>' }],
+          },
+        ],
       });
     }
+    if (fn === 'mod_quiz_get_quizzes_by_courses') {
+      return jsonResponse({ quizzes: [] });
+    }
     if (fn === 'message_popup_get_popup_notifications') {
+      return jsonResponse({ exception: 'webservice_access_exception', errorcode: 'accessexception', message: 'Not enabled' });
+    }
+    if (fn === 'core_message_get_messages') {
+      return jsonResponse({ messages: [] });
+    }
+    if (fn === 'mod_forum_get_forums_by_courses') {
+      return jsonResponse([{ id: 77, course: 12, type: 'news', name: 'Announcements' }]);
+    }
+    if (fn === 'mod_forum_get_forum_discussions') {
       return jsonResponse({
-        notifications: [{ id: 10, subject: 'Quiz open', fullmessage: 'Unit 3 quiz is live', timecreated: 1795400000, read: false }],
+        discussions: [
+          { id: 88, name: 'Unit 3 Quiz Schedule', message: '<p>Quiz opens Friday 10 AM</p>', timemodified: futureSec - 3600 },
+        ],
       });
     }
     return jsonResponse({}, 404);
@@ -209,10 +406,12 @@ test('LMS-only live session fetches Moodle profile, deadlines, and notifications
   const deadlines = await fetchLiveDeadlines(session, deps);
   assert.equal(deadlines.length, 1);
   assert.equal(deadlines[0].courseCode, 'SCS1302');
+  assert.equal(deadlines[0].title, 'Lab 4 Submission');
 
   const notices = await fetchLiveNotifications(session, deps);
   assert.equal(notices.length, 1);
   assert.equal(notices[0].origin, 'LMS');
+  assert.equal(notices[0].courseCode, 'SCS1302');
 
   await assert.rejects(
     () => fetchLiveAttendance(session, deps),
@@ -224,6 +423,8 @@ test('getLiveAdapterConfig defaults to Sathyabama ERP & LMS, flags invalid URLs,
   const defaultCfg = getLiveAdapterConfig({});
   assert.equal(defaultCfg.erpBaseUrl, 'https://erp.sathyabama.ac.in');
   assert.equal(defaultCfg.lmsBaseUrl, 'https://sathyabama.cognibot.in');
+  assert.equal(defaultCfg.erpPaths.profile, '/erp/api/v1.0/MasterStudent/view');
+  assert.equal(defaultCfg.erpPaths.attendance, '/erp/api/v1.0/StudentAttendanceHourly/getStudentAcademicHourwise');
 
   const badCfg = getLiveAdapterConfig({ ERP_BASE_URL: 'http://127.0.0.1:8080' });
   assert.equal(badCfg.erpBaseUrl, null);

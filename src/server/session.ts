@@ -11,6 +11,7 @@ export interface StoredSession {
   name: string;
   mode: DataSourceMode;
   erpToken?: string;
+  erpStudentId?: string;
   lmsToken?: string;
   lmsUserId?: number;
   exp: number;
@@ -58,6 +59,8 @@ export function decryptSession(token: string): StoredSession | null {
       !Number.isFinite(parsed.exp) ||
       typeof parsed.name !== 'string' ||
       !['mock', 'live'].includes(parsed.mode) ||
+      (parsed.erpStudentId !== undefined &&
+        (typeof parsed.erpStudentId !== 'string' || parsed.erpStudentId.length > 64)) ||
       (parsed.lmsUserId !== undefined &&
         (typeof parsed.lmsUserId !== 'number' || !Number.isFinite(parsed.lmsUserId)))
     ) {

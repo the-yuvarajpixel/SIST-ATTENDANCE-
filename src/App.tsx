@@ -138,6 +138,7 @@ export default function App() {
   }, [attendanceTarget]);
 
   const requestVersions = useRef<Partial<Record<SectionKey, number>>>({});
+  const skipNextAutoLoad = useRef(false);
 
   const loadSection = useCallback(async (section: SectionKey, refresh = false) => {
     const version = (requestVersions.current[section] ?? 0) + 1;
@@ -226,9 +227,12 @@ export default function App() {
 
   // Fetch all 6 sections independently once authenticated
   useEffect(() => {
-    if (user) {
-      loadAllSections(false);
+    if (!user) return;
+    if (skipNextAutoLoad.current) {
+      skipNextAutoLoad.current = false;
+      return;
     }
+    loadAllSections(false);
   }, [user, loadAllSections]);
 
   // Global Cmd+K / Ctrl+K shortcut for command palette
@@ -322,6 +326,17 @@ export default function App() {
 
   const handlePortalsConnected = useCallback(
     async (nextUser: SessionUser) => {
+      const switchedContext =
+        !user || user.mode !== nextUser.mode || user.registerNumber !== nextUser.registerNumber;
+      if (switchedContext) {
+        setProfile(emptySection());
+        setAttendance(emptySection());
+        setTimetable(emptySection());
+        setResults(emptySection());
+        setDeadlines(emptySection());
+        setNotifications(emptySection());
+      }
+      skipNextAutoLoad.current = true;
       setUser(nextUser);
       if (nextUser.erpTokenPresent) {
         setAuthNotice(null);
@@ -335,7 +350,7 @@ export default function App() {
         setSyncingPortals(false);
       }
     },
-    [loadAllSections]
+    [loadAllSections, user]
   );
 
   const anyLoading =

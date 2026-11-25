@@ -8,12 +8,16 @@ import {
   parseErpProfile,
   parseErpResults,
   parseErpTimetable,
+  parseMoodleAssignments,
   parseMoodleCourses,
   parseMoodleDeadlines,
+  parseMoodleForumDiscussions,
   parseMoodleNotifications,
+  parseMoodleQuizzes,
   parseMoodleSiteInfo,
   validateRelativePath,
   validateUpstreamBaseUrl,
+  type MoodleCourseSummary,
   type MoodleSiteInfo,
 } from '../core/liveParsers';
 import { deduplicateDeadlines } from '../core/schedule';
@@ -29,8 +33,21 @@ import type { StoredSession } from './session';
 
 const DEFAULT_ERP_BASE_URL = 'https://erp.sathyabama.ac.in';
 const DEFAULT_LMS_BASE_URL = 'https://sathyabama.cognibot.in';
-const DEFAULT_TIMEOUT_MS = 6_000;
+const DEFAULT_TIMEOUT_MS = 8_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MB cap per upstream JSON response
+
+const DEFAULT_ERP_PATHS = {
+  login: '/erp/api/v1.0/MasterStudent/login_sec',
+  studentLookup: '/erp/api/v1.0/MasterStudent/StudentRegNoAutoSuggest',
+  profile: '/erp/api/v1.0/MasterStudent/view',
+  attendance: '/erp/api/v1.0/StudentAttendanceHourly/getStudentAcademicHourwise',
+  timetableId: '/erp/api/v1.0/TimetableDetails/getProgrammeSectionAndTimeSetbyCourse',
+  timetable: '/erp/api/v1.0/TimetableDetails/getdatabyprogramme',
+  semesterList: '/erp/api/v1.0/MasterStudent/studentSemesterListByRegNo',
+  results: '/erp/api/v1.0/ResultMark/studentResult',
+  deadlines: '/erp/api/v1.0/EventCalendar/listStudent',
+  notifications: '/erp/api/v1.0/Notifications/student',
+} as const;
 
 export interface LiveAdapterConfig {
   erpBaseUrl: string | null;
@@ -41,12 +58,23 @@ export interface LiveAdapterConfig {
   lmsConfigError: string | null;
   erpPaths: {
     login: string;
+    studentLookup: string;
     profile: string;
     attendance: string;
+    timetableId: string;
     timetable: string;
+    semesterList: string;
     results: string;
     deadlines: string;
     notifications: string;
+  };
+  customErpPaths: {
+    profile: boolean;
+    attendance: boolean;
+    timetable: boolean;
+    results: boolean;
+    deadlines: boolean;
+    notifications: boolean;
   };
 }
 
@@ -93,6 +121,8 @@ export function getLiveAdapterConfig(env: NodeJS.ProcessEnv = process.env): Live
     }
   };
 
+  const isCustom = (raw: string | undefined) => Boolean(raw && raw.trim().length > 0);
+
   return {
     erpBaseUrl,
     erpHost,
@@ -101,15 +131,53 @@ export function getLiveAdapterConfig(env: NodeJS.ProcessEnv = process.env): Live
     lmsHost,
     lmsConfigError,
     erpPaths: {
-      login: safePath(env.ERP_LOGIN_PATH, '/erp/api/v1.0/MasterStudent/login_sec'),
-      profile: safePath(env.ERP_PROFILE_PATH, '/api/student/profile'),
-      attendance: safePath(env.ERP_ATTENDANCE_PATH, '/api/student/attendance'),
-      timetable: safePath(env.ERP_TIMETABLE_PATH, '/api/student/timetable'),
-      results: safePath(env.ERP_RESULTS_PATH, '/api/student/results'),
-      deadlines: safePath(env.ERP_DEADLINES_PATH, '/api/student/deadlines'),
-      notifications: safePath(env.ERP_NOTIFICATIONS_PATH, '/api/student/notifications'),
+      login: safePath(env.ERP_LOGIN_PATH, DEFAULT_ERP_PATHS.login),
+      studentLookup: safePath(env.ERP_STUDENT_LOOKUP_PATH, DEFAULT_ERP_PATHS.studentLookup),
+      profile: safePath(env.ERP_PROFILE_PATH, DEFAULT_ERP_PATHS.profile),
+      attendance: safePath(env.ERP_ATTENDANCE_PATH, DEFAULT_ERP_PATHS.attendance),
+      timetableId: safePath(env.ERP_TIMETABLE_ID_PATH, DEFAULT_ERP_PATHS.timetableId),
+      timetable: safePath(env.ERP_TIMETABLE_PATH, DEFAULT_ERP_PATHS.timetable),
+      semesterList: safePath(env.ERP_SEMESTER_LIST_PATH, DEFAULT_ERP_PATHS.semesterList),
+      results: safePath(env.ERP_RESULTS_PATH, DEFAULT_ERP_PATHS.results),
+      deadlines: safePath(env.ERP_DEADLINES_PATH, DEFAULT_ERP_PATHS.deadlines),
+      notifications: safePath(env.ERP_NOTIFICATIONS_PATH, DEFAULT_ERP_PATHS.notifications),
+    },
+    customErpPaths: {
+      profile: isCustom(env.ERP_PROFILE_PATH),
+      attendance: isCustom(env.ERP_ATTENDANCE_PATH),
+      timetable: isCustom(env.ERP_TIMETABLE_PATH),
+      results: isCustom(env.ERP_RESULTS_PATH),
+      deadlines: isCustom(env.ERP_DEADLINES_PATH),
+      notifications: isCustom(env.ERP_NOTIFICATIONS_PATH),
     },
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Safely inspects non-secret identity claims (e.g. StudentId) inside a pasted ERP JWT payload.
+ * Never grants trust on its own; upstream ERP still validates the token signature on every request.
+ */
+export function extractErpStudentIdFromToken(erpToken: string): string | undefined {
+  const raw = erpToken.trim().replace(/^bearer\s+/i, '').trim();
+  const parts = raw.split('.');
+  if (parts.length !== 3) return undefined;
+  try {
+    const json = Buffer.from(parts[1], 'base64url').toString('utf8');
+    const claims = JSON.parse(json) as unknown;
+    if (!isRecord(claims)) return undefined;
+    for (const key of ['StudentId', 'studentId', 'student_id', 'IdentityId', 'identityId', 'UserId', 'userId', 'id', 'sub']) {
+      const val = claims[key];
+      if (typeof val === 'number' && Number.isFinite(val) && val > 0) return String(val);
+      if (typeof val === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(val.trim())) return val.trim();
+    }
+  } catch {
+    // Non-JWT or malformed payload — fall back to ERP lookup endpoint.
+  }
+  return undefined;
 }
 
 async function readBoundedJson(res: Response, sourceLabel: string): Promise<unknown> {
@@ -131,12 +199,19 @@ async function readBoundedJson(res: Response, sourceLabel: string): Promise<unkn
   }
 }
 
-function buildErpAuthHeaders(erpToken: string, registerNumber: string): Record<string, string> {
+function buildErpAuthHeaders(
+  erpToken: string,
+  registerNumber: string,
+  withJsonBody = false
+): Record<string, string> {
   const trimmed = erpToken.trim();
   const headers: Record<string, string> = {
     Accept: 'application/json',
     'X-Register-Number': registerNumber,
   };
+  if (withJsonBody) {
+    headers['Content-Type'] = 'application/json';
+  }
   // Support both Bearer/Access-Token JWTs and browser session cookies (e.g. PHPSESSID=... or JSESSIONID=...)
   if (/^[A-Za-z0-9_.-]+=/.test(trimmed)) {
     headers.Cookie = trimmed;
@@ -151,10 +226,11 @@ function buildErpAuthHeaders(erpToken: string, registerNumber: string): Record<s
   return headers;
 }
 
-async function fetchErpJson(
+async function requestErpJson(
   pathSuffix: string,
   erpToken: string,
   registerNumber: string,
+  options: { method?: 'GET' | 'POST'; body?: Record<string, unknown> } = {},
   deps: LiveAdapterDeps = {}
 ): Promise<unknown> {
   const config = getLiveAdapterConfig(deps.env);
@@ -174,12 +250,15 @@ async function fetchErpJson(
   const fetchImpl = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const targetUrl = `${config.erpBaseUrl}${pathSuffix}`;
+  const method = options.method ?? 'GET';
+  const hasBody = method === 'POST';
 
   let res: Response;
   try {
     res = await fetchImpl(targetUrl, {
-      method: 'GET',
-      headers: buildErpAuthHeaders(erpToken, registerNumber),
+      method,
+      headers: buildErpAuthHeaders(erpToken, registerNumber, hasBody),
+      body: hasBody ? JSON.stringify(options.body ?? {}) : undefined,
       redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -197,7 +276,7 @@ async function fetchErpJson(
   if (res.status === 401 || res.status === 403) {
     throw new LiveUpstreamError(
       401,
-      `College ERP rejected the session token (HTTP ${res.status}). Sign in again after refreshing your browser ERP token.`,
+      `College ERP rejected the session token (HTTP ${res.status}). Sign in again at ${config.erpHost} and paste a fresh Access-Token.`,
       { field: 'erpToken' }
     );
   }
@@ -207,7 +286,106 @@ async function fetchErpJson(
     });
   }
 
-  return readBoundedJson(res, 'College ERP');
+  const parsed = await readBoundedJson(res, 'College ERP');
+  if (isRecord(parsed)) {
+    const failedStatus = parsed.status === 0 || parsed.status === false || parsed.success === false;
+    const msg = typeof parsed.message === 'string' ? parsed.message.trim() : '';
+    if (failedStatus && /unauthori|expired|invalid token|jwt|not authenticated|forbidden/i.test(msg)) {
+      throw new LiveUpstreamError(
+        401,
+        `College ERP session expired (${msg}). Sign in again at ${config.erpHost} and paste a fresh Access-Token.`,
+        { field: 'erpToken' }
+      );
+    }
+  }
+  return parsed;
+}
+
+function shouldUseSathyabamaPost(pathSuffix: string, isCustomOverride: boolean): boolean {
+  if (!isCustomOverride) return true;
+  return pathSuffix.startsWith('/erp/api/');
+}
+
+async function resolveErpStudentId(
+  erpToken: string,
+  registerNumber: string,
+  knownStudentId?: string,
+  deps: LiveAdapterDeps = {}
+): Promise<string | undefined> {
+  if (knownStudentId && knownStudentId.trim()) return knownStudentId.trim();
+  const fromJwt = extractErpStudentIdFromToken(erpToken);
+  if (fromJwt) return fromJwt;
+
+  const config = getLiveAdapterConfig(deps.env);
+  try {
+    const raw = await requestErpJson(
+      config.erpPaths.studentLookup,
+      erpToken,
+      registerNumber,
+      { method: 'POST', body: { RegNo: registerNumber.trim() } },
+      deps
+    );
+    const list =
+      isRecord(raw) && Array.isArray(raw.responseData)
+        ? raw.responseData
+        : Array.isArray(raw)
+          ? raw
+          : [];
+    const targetUpper = registerNumber.trim().toUpperCase();
+    const match =
+      list.find(
+        (item) =>
+          isRecord(item) &&
+          typeof item.RegisterNumber === 'string' &&
+          item.RegisterNumber.trim().toUpperCase() === targetUpper
+      ) ?? list[0];
+    if (isRecord(match)) {
+      const sid = match.StudentId ?? match.studentId ?? match.id;
+      if (typeof sid === 'number' && Number.isFinite(sid) && sid > 0) return String(sid);
+      if (typeof sid === 'string' && sid.trim()) return sid.trim();
+    }
+  } catch (err) {
+    if (err instanceof LiveUpstreamError && err.status === 401) throw err;
+  }
+  return undefined;
+}
+
+async function fetchErpStudentViewRaw(
+  erpToken: string,
+  registerNumber: string,
+  knownStudentId?: string,
+  deps: LiveAdapterDeps = {}
+): Promise<{ raw: unknown; studentId?: string }> {
+  const config = getLiveAdapterConfig(deps.env);
+  if (!shouldUseSathyabamaPost(config.erpPaths.profile, config.customErpPaths.profile)) {
+    const raw = await requestErpJson(config.erpPaths.profile, erpToken, registerNumber, { method: 'GET' }, deps);
+    return { raw, studentId: knownStudentId };
+  }
+
+  const studentId = await resolveErpStudentId(erpToken, registerNumber, knownStudentId, deps);
+  const body: Record<string, unknown> = studentId
+    ? { StudentId: /^\d+$/.test(studentId) ? Number(studentId) : studentId, RegisterNumber: registerNumber }
+    : { RegisterNumber: registerNumber };
+
+  const raw = await requestErpJson(
+    config.erpPaths.profile,
+    erpToken,
+    registerNumber,
+    { method: 'POST', body },
+    deps
+  );
+
+  let resolvedId = studentId;
+  if (!resolvedId && isRecord(raw) && isRecord(raw.responseData)) {
+    const info = Array.isArray(raw.responseData.StudentInfo) ? raw.responseData.StudentInfo[0] : raw.responseData;
+    if (isRecord(info)) {
+      const sid = info.StudentId ?? info.studentId;
+      if (typeof sid === 'number' && Number.isFinite(sid) && sid > 0) resolvedId = String(sid);
+      else if (typeof sid === 'string' && sid.trim()) resolvedId = sid.trim();
+    }
+  }
+
+  return { raw, studentId: resolvedId };
 }
 
 async function callMoodleFunction(
@@ -380,6 +558,7 @@ function generateErpCaptchaKey(length = 48): string {
 export interface ErpCredentialExchangeResult {
   token: string;
   studentName?: string;
+  studentId?: string;
 }
 
 export async function exchangeErpCredentialsForToken(
@@ -497,7 +676,14 @@ export async function exchangeErpCredentialsForToken(
           : loginObj && typeof loginObj.name === 'string' && loginObj.name.trim()
             ? loginObj.name.trim()
             : undefined;
-      return { token: rawToken.trim(), studentName };
+      const rawSid = loginObj ? loginObj.StudentId ?? loginObj.IdentityId ?? loginObj.studentId : undefined;
+      const studentId =
+        typeof rawSid === 'number' && Number.isFinite(rawSid)
+          ? String(rawSid)
+          : typeof rawSid === 'string' && rawSid.trim()
+            ? rawSid.trim()
+            : extractErpStudentIdFromToken(rawToken);
+      return { token: rawToken.trim(), studentName, studentId };
     }
 
     const upstreamMsg =
@@ -562,16 +748,20 @@ export async function verifyMoodleToken(
   return parseMoodleSiteInfo(raw);
 }
 
+export interface VerifiedErpProfile extends StudentProfile {
+  erpStudentId?: string;
+}
+
 export async function verifyErpToken(
   erpToken: string,
   registerNumber: string,
   displayName?: string,
   lmsConnected = false,
   deps: LiveAdapterDeps = {}
-): Promise<StudentProfile> {
-  const config = getLiveAdapterConfig(deps.env);
-  const raw = await fetchErpJson(config.erpPaths.profile, erpToken, registerNumber, deps);
-  return parseErpProfile(raw, registerNumber, displayName, lmsConnected);
+): Promise<VerifiedErpProfile> {
+  const { raw, studentId } = await fetchErpStudentViewRaw(erpToken, registerNumber, undefined, deps);
+  const profile = parseErpProfile(raw, registerNumber, displayName, lmsConnected);
+  return { ...profile, erpStudentId: studentId };
 }
 
 export async function fetchLiveProfile(
@@ -580,7 +770,12 @@ export async function fetchLiveProfile(
 ): Promise<StudentProfile> {
   const config = getLiveAdapterConfig(deps.env);
   if (session.erpToken && config.erpBaseUrl) {
-    const raw = await fetchErpJson(config.erpPaths.profile, session.erpToken, session.registerNumber, deps);
+    const { raw } = await fetchErpStudentViewRaw(
+      session.erpToken,
+      session.registerNumber,
+      session.erpStudentId,
+      deps
+    );
     return parseErpProfile(raw, session.registerNumber, session.name, Boolean(session.lmsToken));
   }
   if (session.lmsToken) {
@@ -601,7 +796,33 @@ export async function fetchLiveAttendance(
     );
   }
   const config = getLiveAdapterConfig(deps.env);
-  const raw = await fetchErpJson(config.erpPaths.attendance, session.erpToken, session.registerNumber, deps);
+  if (!shouldUseSathyabamaPost(config.erpPaths.attendance, config.customErpPaths.attendance)) {
+    const raw = await requestErpJson(
+      config.erpPaths.attendance,
+      session.erpToken,
+      session.registerNumber,
+      { method: 'GET' },
+      deps
+    );
+    return parseErpAttendance(raw);
+  }
+
+  const studentId = await resolveErpStudentId(
+    session.erpToken,
+    session.registerNumber,
+    session.erpStudentId,
+    deps
+  );
+  const body: Record<string, unknown> = studentId
+    ? { StudentId: /^\d+$/.test(studentId) ? Number(studentId) : studentId, RegisterNumber: session.registerNumber }
+    : { RegisterNumber: session.registerNumber };
+  const raw = await requestErpJson(
+    config.erpPaths.attendance,
+    session.erpToken,
+    session.registerNumber,
+    { method: 'POST', body },
+    deps
+  );
   return parseErpAttendance(raw);
 }
 
@@ -616,7 +837,75 @@ export async function fetchLiveTimetable(
     );
   }
   const config = getLiveAdapterConfig(deps.env);
-  const raw = await fetchErpJson(config.erpPaths.timetable, session.erpToken, session.registerNumber, deps);
+  if (!shouldUseSathyabamaPost(config.erpPaths.timetable, config.customErpPaths.timetable)) {
+    const raw = await requestErpJson(
+      config.erpPaths.timetable,
+      session.erpToken,
+      session.registerNumber,
+      { method: 'GET' },
+      deps
+    );
+    return parseErpTimetable(raw);
+  }
+
+  // Sathyabama ERP timetable flow: resolve student academic metadata -> getProgrammeSectionAndTimeSetbyCourse -> getdatabyprogramme
+  const { raw: studentViewRaw } = await fetchErpStudentViewRaw(
+    session.erpToken,
+    session.registerNumber,
+    session.erpStudentId,
+    deps
+  );
+  const studentInfo =
+    isRecord(studentViewRaw) && isRecord(studentViewRaw.responseData)
+      ? Array.isArray(studentViewRaw.responseData.StudentInfo) && isRecord(studentViewRaw.responseData.StudentInfo[0])
+        ? (studentViewRaw.responseData.StudentInfo[0] as Record<string, unknown>)
+        : studentViewRaw.responseData
+      : isRecord(studentViewRaw)
+        ? studentViewRaw
+        : {};
+
+  const lookupPayload: Record<string, unknown> = {
+    DegreeId: studentInfo.DegreeId,
+    CourseId: studentInfo.CourseId,
+    ProgrammeId: studentInfo.ProgrammeId,
+    Batch: studentInfo.Batch,
+    Semester: studentInfo.Semester,
+    Year: studentInfo.YearofStudy ?? studentInfo.Year,
+    SectionId: studentInfo.Section ?? studentInfo.SectionId,
+  };
+
+  let timetablePayload: Record<string, unknown> = lookupPayload;
+  try {
+    const idRaw = await requestErpJson(
+      config.erpPaths.timetableId,
+      session.erpToken,
+      session.registerNumber,
+      { method: 'POST', body: lookupPayload },
+      deps
+    );
+    const idData =
+      isRecord(idRaw) && Array.isArray(idRaw.responseData) && isRecord(idRaw.responseData[0])
+        ? (idRaw.responseData[0] as Record<string, unknown>)
+        : isRecord(idRaw) && isRecord(idRaw.responseData)
+          ? idRaw.responseData
+          : null;
+    if (idData && (idData.TimeTableId !== undefined || idData.ProgrammeSectionId !== undefined)) {
+      timetablePayload = {
+        TimeTableId: idData.TimeTableId,
+        ProgrammeSectionId: idData.ProgrammeSectionId,
+      };
+    }
+  } catch (err) {
+    if (err instanceof LiveUpstreamError && err.status === 401) throw err;
+  }
+
+  const raw = await requestErpJson(
+    config.erpPaths.timetable,
+    session.erpToken,
+    session.registerNumber,
+    { method: 'POST', body: timetablePayload },
+    deps
+  );
   return parseErpTimetable(raw);
 }
 
@@ -631,8 +920,104 @@ export async function fetchLiveResults(
     );
   }
   const config = getLiveAdapterConfig(deps.env);
-  const raw = await fetchErpJson(config.erpPaths.results, session.erpToken, session.registerNumber, deps);
+  if (!shouldUseSathyabamaPost(config.erpPaths.results, config.customErpPaths.results)) {
+    const raw = await requestErpJson(
+      config.erpPaths.results,
+      session.erpToken,
+      session.registerNumber,
+      { method: 'GET' },
+      deps
+    );
+    return parseErpResults(raw);
+  }
+
+  // Sathyabama ERP results flow: list available semesters by RegNo, then fetch SemResult rows per semester
+  let semEntries: Record<string, unknown>[] = [];
+  try {
+    const semRaw = await requestErpJson(
+      config.erpPaths.semesterList,
+      session.erpToken,
+      session.registerNumber,
+      { method: 'POST', body: { RegisterNumber: session.registerNumber } },
+      deps
+    );
+    const list =
+      isRecord(semRaw) && Array.isArray(semRaw.responseData)
+        ? semRaw.responseData
+        : Array.isArray(semRaw)
+          ? semRaw
+          : [];
+    semEntries = list.filter(isRecord);
+  } catch (err) {
+    if (err instanceof LiveUpstreamError && err.status === 401) throw err;
+  }
+
+  if (semEntries.length > 0) {
+    const settled = await Promise.allSettled(
+      semEntries.slice(0, 10).map((entry) =>
+        requestErpJson(
+          config.erpPaths.results,
+          session.erpToken!,
+          session.registerNumber,
+          {
+            method: 'POST',
+            body: {
+              RegisterNumber: session.registerNumber,
+              AcademicMonthId: entry.AcademicMonthId,
+              AcademicYear: entry.AcademicYear,
+              Semester: entry.Semester,
+            },
+          },
+          deps
+        )
+      )
+    );
+
+    const allRows: unknown[] = [];
+    let firstAuthErr: LiveUpstreamError | null = null;
+    for (const outcome of settled) {
+      if (outcome.status === 'fulfilled') {
+        const val = outcome.value;
+        if (isRecord(val) && isRecord(val.responseData) && Array.isArray(val.responseData.SemResult)) {
+          allRows.push(...val.responseData.SemResult);
+        } else if (isRecord(val) && Array.isArray(val.responseData)) {
+          allRows.push(...val.responseData);
+        }
+      } else if (outcome.reason instanceof LiveUpstreamError && outcome.reason.status === 401) {
+        firstAuthErr = outcome.reason;
+      }
+    }
+    if (allRows.length === 0 && firstAuthErr) throw firstAuthErr;
+    return parseErpResults({ responseData: { SemResult: allRows } });
+  }
+
+  const raw = await requestErpJson(
+    config.erpPaths.results,
+    session.erpToken,
+    session.registerNumber,
+    { method: 'POST', body: { RegisterNumber: session.registerNumber } },
+    deps
+  );
   return parseErpResults(raw);
+}
+
+async function fetchMoodleCourseMap(
+  lmsToken: string,
+  userId: number,
+  deps: LiveAdapterDeps = {}
+): Promise<Map<number, MoodleCourseSummary>> {
+  try {
+    const rawCourses = await callMoodleFunction(
+      lmsToken,
+      'core_enrol_get_users_courses',
+      { userid: userId },
+      deps
+    );
+    return parseMoodleCourses(rawCourses);
+  } catch (err) {
+    if (err instanceof LiveUpstreamError && err.status === 401) throw err;
+    return new Map();
+  }
 }
 
 async function fetchMoodleDeadlinesForSession(
@@ -647,37 +1032,81 @@ async function fetchMoodleDeadlinesForSession(
     userId = info.userid;
   }
 
-  let courseMap = new Map<number, { id: number; shortname: string; fullname: string }>();
-  try {
-    const rawCourses = await callMoodleFunction(
-      session.lmsToken,
-      'core_enrol_get_users_courses',
-      { userid: userId },
+  const courseMap = await fetchMoodleCourseMap(session.lmsToken, userId, deps);
+  const courseIds = Array.from(courseMap.keys()).slice(0, 20);
+  const courseParams: Record<string, string | number> = {};
+  courseIds.forEach((cid, i) => {
+    courseParams[`courseids[${i}]`] = cid;
+  });
+
+  // Query Moodle calendar events, course assignments, and quizzes in parallel so deadlines populate
+  // even when one Moodle web-service function is restricted or empty on sathyabama.cognibot.in.
+  const calendarTask = async (): Promise<DeadlineItem[]> => {
+    try {
+      const raw = await callMoodleFunction(
+        session.lmsToken!,
+        'core_calendar_get_action_events_by_timesort',
+        { timesortfrom: nowSec, limitnum: 50 },
+        deps
+      );
+      return parseMoodleDeadlines(raw, courseMap);
+    } catch (err) {
+      if (err instanceof LiveUpstreamError && err.status === 401) throw err;
+      const fallback = await callMoodleFunction(
+        session.lmsToken!,
+        'core_calendar_get_calendar_upcoming_view',
+        {},
+        deps
+      );
+      return parseMoodleDeadlines(fallback, courseMap);
+    }
+  };
+
+  const assignTask = async (): Promise<DeadlineItem[]> => {
+    const raw = await callMoodleFunction(
+      session.lmsToken!,
+      'mod_assign_get_assignments',
+      courseIds.length > 0 ? courseParams : {},
       deps
     );
-    courseMap = parseMoodleCourses(rawCourses);
-  } catch {
-    // Course list enrichment is optional; continue even if restricted on this Moodle instance.
+    return parseMoodleAssignments(raw, courseMap);
+  };
+
+  const quizTask = async (): Promise<DeadlineItem[]> => {
+    if (courseIds.length === 0) return [];
+    const raw = await callMoodleFunction(
+      session.lmsToken!,
+      'mod_quiz_get_quizzes_by_courses',
+      courseParams,
+      deps
+    );
+    return parseMoodleQuizzes(raw, courseMap);
+  };
+
+  const settled = await Promise.allSettled([calendarTask(), assignTask(), quizTask()]);
+  const combined: DeadlineItem[] = [];
+  let succeededCount = 0;
+  let firstError: unknown = null;
+
+  for (const outcome of settled) {
+    if (outcome.status === 'fulfilled') {
+      succeededCount += 1;
+      combined.push(...outcome.value);
+    } else {
+      if (outcome.reason instanceof LiveUpstreamError && outcome.reason.status === 401) {
+        throw outcome.reason;
+      }
+      if (!firstError) firstError = outcome.reason;
+    }
   }
 
-  try {
-    const raw = await callMoodleFunction(
-      session.lmsToken,
-      'core_calendar_get_action_events_by_timesort',
-      { timesortfrom: nowSec, limitnum: 50 },
-      deps
-    );
-    return parseMoodleDeadlines(raw, courseMap);
-  } catch (err) {
-    if (err instanceof LiveUpstreamError && err.status === 401) throw err;
-    const fallback = await callMoodleFunction(
-      session.lmsToken,
-      'core_calendar_get_calendar_upcoming_view',
-      {},
-      deps
-    );
-    return parseMoodleDeadlines(fallback, courseMap);
+  if (succeededCount === 0 && firstError) {
+    throw firstError instanceof Error
+      ? firstError
+      : new LiveUpstreamError(502, 'Unable to fetch Moodle LMS deadlines.');
   }
+
+  return deduplicateDeadlines(combined).items;
 }
 
 export async function fetchLiveDeadlines(
@@ -691,10 +1120,15 @@ export async function fetchLiveDeadlines(
     tasks.push(fetchMoodleDeadlinesForSession(session, deps));
   }
   if (session.erpToken && config.erpBaseUrl) {
+    const usePost = shouldUseSathyabamaPost(config.erpPaths.deadlines, config.customErpPaths.deadlines);
     tasks.push(
-      fetchErpJson(config.erpPaths.deadlines, session.erpToken, session.registerNumber, deps).then(
-        parseErpDeadlines
-      )
+      requestErpJson(
+        config.erpPaths.deadlines,
+        session.erpToken,
+        session.registerNumber,
+        usePost ? { method: 'POST', body: {} } : { method: 'GET' },
+        deps
+      ).then(parseErpDeadlines)
     );
   }
 
@@ -704,21 +1138,71 @@ export async function fetchLiveDeadlines(
 
   const settled = await Promise.allSettled(tasks);
   const combined: DeadlineItem[] = [];
+  let succeededCount = 0;
   let firstError: unknown = null;
 
   for (const outcome of settled) {
     if (outcome.status === 'fulfilled') {
+      succeededCount += 1;
       combined.push(...outcome.value);
     } else if (!firstError) {
       firstError = outcome.reason;
     }
   }
 
-  if (combined.length === 0 && firstError) {
+  if (succeededCount === 0 && firstError) {
     throw firstError instanceof Error ? firstError : new LiveUpstreamError(502, 'Unable to fetch live deadlines.');
   }
 
   return deduplicateDeadlines(combined).items;
+}
+
+async function fetchMoodleForumAnnouncements(
+  lmsToken: string,
+  courseMap: Map<number, MoodleCourseSummary>,
+  deps: LiveAdapterDeps = {}
+): Promise<NotificationItem[]> {
+  const courseIds = Array.from(courseMap.keys()).slice(0, 12);
+  if (courseIds.length === 0) return [];
+  const params: Record<string, string | number> = {};
+  courseIds.forEach((cid, i) => {
+    params[`courseids[${i}]`] = cid;
+  });
+
+  const rawForums = await callMoodleFunction(lmsToken, 'mod_forum_get_forums_by_courses', params, deps);
+  if (!Array.isArray(rawForums)) return [];
+
+  const announcementForums = rawForums
+    .filter(
+      (f): f is Record<string, unknown> =>
+        isRecord(f) &&
+        (f.type === 'news' || /announce|notice|circular/i.test(String(f.name ?? ''))) &&
+        Number.isFinite(Number(f.id))
+    )
+    .slice(0, 6);
+
+  if (announcementForums.length === 0) return [];
+
+  const settled = await Promise.allSettled(
+    announcementForums.map(async (forum) => {
+      const forumId = Number(forum.id);
+      const courseId = Number(forum.course);
+      const courseCode = Number.isFinite(courseId) ? courseMap.get(courseId)?.shortname : undefined;
+      const rawDiscussions = await callMoodleFunction(
+        lmsToken,
+        'mod_forum_get_forum_discussions',
+        { forumid: forumId, sortorder: 1, page: 0, perpage: 5 },
+        deps
+      );
+      return parseMoodleForumDiscussions(rawDiscussions, courseCode);
+    })
+  );
+
+  const items: NotificationItem[] = [];
+  for (const outcome of settled) {
+    if (outcome.status === 'fulfilled') items.push(...outcome.value);
+  }
+  return items;
 }
 
 async function fetchMoodleNotificationsForSession(
@@ -732,6 +1216,10 @@ async function fetchMoodleNotificationsForSession(
     userId = info.userid;
   }
 
+  let primaryItems: NotificationItem[] = [];
+  let primarySucceeded = false;
+  let primaryError: unknown = null;
+
   try {
     const raw = await callMoodleFunction(
       session.lmsToken,
@@ -739,17 +1227,72 @@ async function fetchMoodleNotificationsForSession(
       { useridto: userId, limit: 30, offset: 0 },
       deps
     );
-    return parseMoodleNotifications(raw);
+    primaryItems = parseMoodleNotifications(raw);
+    primarySucceeded = true;
   } catch (err) {
     if (err instanceof LiveUpstreamError && err.status === 401) throw err;
-    const fallback = await callMoodleFunction(
-      session.lmsToken,
-      'core_message_get_messages',
-      { useridto: userId, useridfrom: 0, type: 'notifications', read: 0, newestfirst: 1, limitnum: 30 },
-      deps
-    );
-    return parseMoodleNotifications(fallback);
+    primaryError = err;
+    // Fallback to core_message_get_messages fetching both unread and recent read notifications
+    try {
+      const [unreadRes, readRes] = await Promise.allSettled([
+        callMoodleFunction(
+          session.lmsToken,
+          'core_message_get_messages',
+          { useridto: userId, useridfrom: 0, type: 'notifications', read: 0, newestfirst: 1, limitnum: 20 },
+          deps
+        ).then(parseMoodleNotifications),
+        callMoodleFunction(
+          session.lmsToken,
+          'core_message_get_messages',
+          { useridto: userId, useridfrom: 0, type: 'notifications', read: 1, newestfirst: 1, limitnum: 15 },
+          deps
+        ).then(parseMoodleNotifications),
+      ]);
+      const merged: NotificationItem[] = [];
+      let anyMsgOk = false;
+      for (const outcome of [unreadRes, readRes]) {
+        if (outcome.status === 'fulfilled') {
+          anyMsgOk = true;
+          merged.push(...outcome.value);
+        } else if (outcome.reason instanceof LiveUpstreamError && outcome.reason.status === 401) {
+          throw outcome.reason;
+        }
+      }
+      if (anyMsgOk) {
+        primaryItems = merged;
+        primarySucceeded = true;
+      }
+    } catch (fallbackErr) {
+      if (fallbackErr instanceof LiveUpstreamError && fallbackErr.status === 401) throw fallbackErr;
+      if (!primaryError) primaryError = fallbackErr;
+    }
   }
+
+  // If popup/message notifications are empty or restricted, enrich with Moodle course announcement forums
+  if (primaryItems.length === 0) {
+    try {
+      const courseMap = await fetchMoodleCourseMap(session.lmsToken, userId, deps);
+      const forumItems = await fetchMoodleForumAnnouncements(session.lmsToken, courseMap, deps);
+      if (forumItems.length > 0) {
+        primaryItems = forumItems;
+        primarySucceeded = true;
+      }
+    } catch (forumErr) {
+      if (forumErr instanceof LiveUpstreamError && forumErr.status === 401) throw forumErr;
+    }
+  }
+
+  if (!primarySucceeded && primaryError) {
+    throw primaryError instanceof Error
+      ? primaryError
+      : new LiveUpstreamError(502, 'Unable to fetch Moodle LMS notifications.');
+  }
+
+  const deduped = new Map<string, NotificationItem>();
+  for (const item of primaryItems) {
+    if (!deduped.has(item.id)) deduped.set(item.id, item);
+  }
+  return Array.from(deduped.values()).sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt));
 }
 
 export async function fetchLiveNotifications(
@@ -763,10 +1306,23 @@ export async function fetchLiveNotifications(
     tasks.push(fetchMoodleNotificationsForSession(session, deps));
   }
   if (session.erpToken && config.erpBaseUrl) {
+    const usePost = shouldUseSathyabamaPost(config.erpPaths.notifications, config.customErpPaths.notifications);
     tasks.push(
-      fetchErpJson(config.erpPaths.notifications, session.erpToken, session.registerNumber, deps).then(
-        parseErpNotifications
-      )
+      requestErpJson(
+        config.erpPaths.notifications,
+        session.erpToken,
+        session.registerNumber,
+        usePost
+          ? {
+              method: 'POST',
+              body: {
+                columnSort: { fieldName: 'NotificationId', sortDirection: 'DESC' },
+                paging: { pageNo: 0, pageSize: 20, totalCount: 0, offSet: 0 },
+              },
+            }
+          : { method: 'GET' },
+        deps
+      ).then(parseErpNotifications)
     );
   }
 
@@ -776,17 +1332,19 @@ export async function fetchLiveNotifications(
 
   const settled = await Promise.allSettled(tasks);
   const combined: NotificationItem[] = [];
+  let succeededCount = 0;
   let firstError: unknown = null;
 
   for (const outcome of settled) {
     if (outcome.status === 'fulfilled') {
+      succeededCount += 1;
       combined.push(...outcome.value);
     } else if (!firstError) {
       firstError = outcome.reason;
     }
   }
 
-  if (combined.length === 0 && firstError) {
+  if (succeededCount === 0 && firstError) {
     throw firstError instanceof Error
       ? firstError
       : new LiveUpstreamError(502, 'Unable to fetch live notifications.');

@@ -26,6 +26,14 @@ test('validateUpstreamBaseUrl allows public HTTPS URLs and normalizes trailing s
     validateUpstreamBaseUrl('https://erp.sathyabama.ac.in/portal/'),
     'https://erp.sathyabama.ac.in/portal'
   );
+  assert.equal(
+    validateUpstreamBaseUrl('https://erp.sathyabama.ac.in/account/login'),
+    'https://erp.sathyabama.ac.in'
+  );
+  assert.equal(
+    validateUpstreamBaseUrl('https://sathyabama.cognibot.in/login/index.php'),
+    'https://sathyabama.cognibot.in'
+  );
 });
 
 test('validateUpstreamBaseUrl blocks insecure schemes, credentials, loopback, private, and metadata hosts', () => {
