@@ -162,6 +162,124 @@ export function validateTimetable(input: unknown): TimetableSlot[] {
   return slots;
 }
 
+export function validateCaeMarks(input: unknown): SubjectCaeMark[] {
+  if (!Array.isArray(input)) {
+    throw new SchemaValidationError('caeMarks', ['payload must be an array']);
+  }
+  if (input.length > 30) {
+    throw new SchemaValidationError('caeMarks', ['cannot exceed 30 subjects']);
+  }
+  const issues: string[] = [];
+  const marks: SubjectCaeMark[] = input.map((item, idx) => {
+    if (!isRecord(item)) {
+      issues.push(`caeMarks[${idx}] invalid`);
+      return {
+        courseCode: '',
+        courseName: '',
+        credits: 0,
+        cae1: null,
+        cae1Max: 50,
+        cae2: null,
+        cae2Max: 50,
+        internalBonus: null,
+        internalBonusMax: 10,
+        internalTotal: 0,
+        internalMax: 50,
+        standing: 'pending',
+      };
+    }
+    const cae1Max = assertFiniteNumber(item.cae1Max ?? 50, `caeMarks[${idx}].cae1Max`, issues, 1, 200);
+    const cae2Max = assertFiniteNumber(item.cae2Max ?? 50, `caeMarks[${idx}].cae2Max`, issues, 1, 200);
+    const internalBonusMax = assertFiniteNumber(
+      item.internalBonusMax ?? 10,
+      `caeMarks[${idx}].internalBonusMax`,
+      issues,
+      0,
+      100
+    );
+    const internalMax = assertFiniteNumber(item.internalMax ?? 50, `caeMarks[${idx}].internalMax`, issues, 1, 200);
+    const cae1 =
+      item.cae1 === null || item.cae1 === undefined
+        ? null
+        : assertFiniteNumber(item.cae1, `caeMarks[${idx}].cae1`, issues, 0, cae1Max);
+    const cae2 =
+      item.cae2 === null || item.cae2 === undefined
+        ? null
+        : assertFiniteNumber(item.cae2, `caeMarks[${idx}].cae2`, issues, 0, cae2Max);
+    const internalBonus =
+      item.internalBonus === null || item.internalBonus === undefined
+        ? null
+        : assertFiniteNumber(
+            item.internalBonus,
+            `caeMarks[${idx}].internalBonus`,
+            issues,
+            0,
+            Math.max(internalBonusMax, 100)
+          );
+    const internalTotal = assertFiniteNumber(
+      item.internalTotal,
+      `caeMarks[${idx}].internalTotal`,
+      issues,
+      0,
+      internalMax
+    );
+    const rawStanding = item.standing as CaeStanding;
+    const standing: CaeStanding = VALID_CAE_STANDINGS.has(rawStanding) ? rawStanding : 'pending';
+    const classAvgCae1 =
+      item.classAvgCae1 === null || item.classAvgCae1 === undefined
+        ? undefined
+        : assertFiniteNumber(item.classAvgCae1, `caeMarks[${idx}].classAvgCae1`, issues, 0, cae1Max);
+    const classAvgCae2 =
+      item.classAvgCae2 === null || item.classAvgCae2 === undefined
+        ? undefined
+        : assertFiniteNumber(item.classAvgCae2, `caeMarks[${idx}].classAvgCae2`, issues, 0, cae2Max);
+    const classAvgBonus =
+      item.classAvgBonus === null || item.classAvgBonus === undefined
+        ? undefined
+        : assertFiniteNumber(
+            item.classAvgBonus,
+            `caeMarks[${idx}].classAvgBonus`,
+            issues,
+            0,
+            Math.max(internalBonusMax, 100)
+          );
+    const classAvgInternal =
+      item.classAvgInternal === null || item.classAvgInternal === undefined
+        ? undefined
+        : assertFiniteNumber(item.classAvgInternal, `caeMarks[${idx}].classAvgInternal`, issues, 0, internalMax);
+    const classTopInternal =
+      item.classTopInternal === null || item.classTopInternal === undefined
+        ? undefined
+        : assertFiniteNumber(item.classTopInternal, `caeMarks[${idx}].classTopInternal`, issues, 0, internalMax);
+
+    const courseCode = assertNonEmptyString(item.courseCode, `caeMarks[${idx}].courseCode`, issues).slice(0, 24);
+    const courseName = assertNonEmptyString(item.courseName, `caeMarks[${idx}].courseName`, issues).slice(0, 120);
+    return {
+      courseCode,
+      courseName,
+      credits: assertFiniteNumber(item.credits, `caeMarks[${idx}].credits`, issues, 0, 12),
+      cae1,
+      cae1Max,
+      cae2,
+      cae2Max,
+      internalBonus,
+      internalBonusMax,
+      internalTotal,
+      internalMax,
+      standing,
+      remarks:
+        typeof item.remarks === 'string' && item.remarks.trim() ? item.remarks.trim().slice(0, 160) : undefined,
+      classAvgCae1,
+      classAvgCae2,
+      classAvgBonus,
+      classAvgInternal,
+      classTopInternal,
+    };
+  });
+  if (issues.length > 0) throw new SchemaValidationError('caeMarks', issues);
+  return marks;
+}
+
 export function validateResults(input: unknown): ResultsPayload {
   if (!isRecord(input) || !Array.isArray(input.semesters) || !Array.isArray(input.currentCourses)) {
     throw new SchemaValidationError('results', ['payload must contain semesters and currentCourses arrays']);
@@ -219,111 +337,14 @@ export function validateResults(input: unknown): ResultsPayload {
 
   let caeMarks: SubjectCaeMark[] = [];
   if (input.caeMarks !== undefined) {
-    if (!Array.isArray(input.caeMarks)) {
-      issues.push('caeMarks must be an array when provided');
-    } else {
-      caeMarks = input.caeMarks.map((item, idx) => {
-        if (!isRecord(item)) {
-          issues.push(`caeMarks[${idx}] invalid`);
-          return {
-            courseCode: '',
-            courseName: '',
-            credits: 0,
-            cae1: null,
-            cae1Max: 50,
-            cae2: null,
-            cae2Max: 50,
-            internalBonus: null,
-            internalBonusMax: 10,
-            internalTotal: 0,
-            internalMax: 50,
-            standing: 'pending',
-          };
-        }
-        const cae1Max = assertFiniteNumber(item.cae1Max ?? 50, `caeMarks[${idx}].cae1Max`, issues, 1, 200);
-        const cae2Max = assertFiniteNumber(item.cae2Max ?? 50, `caeMarks[${idx}].cae2Max`, issues, 1, 200);
-        const internalBonusMax = assertFiniteNumber(
-          item.internalBonusMax ?? 10,
-          `caeMarks[${idx}].internalBonusMax`,
-          issues,
-          0,
-          100
-        );
-        const internalMax = assertFiniteNumber(item.internalMax ?? 50, `caeMarks[${idx}].internalMax`, issues, 1, 200);
-        const cae1 =
-          item.cae1 === null || item.cae1 === undefined
-            ? null
-            : assertFiniteNumber(item.cae1, `caeMarks[${idx}].cae1`, issues, 0, cae1Max);
-        const cae2 =
-          item.cae2 === null || item.cae2 === undefined
-            ? null
-            : assertFiniteNumber(item.cae2, `caeMarks[${idx}].cae2`, issues, 0, cae2Max);
-        const internalBonus =
-          item.internalBonus === null || item.internalBonus === undefined
-            ? null
-            : assertFiniteNumber(
-                item.internalBonus,
-                `caeMarks[${idx}].internalBonus`,
-                issues,
-                0,
-                Math.max(internalBonusMax, 100)
-              );
-        const internalTotal = assertFiniteNumber(
-          item.internalTotal,
-          `caeMarks[${idx}].internalTotal`,
-          issues,
-          0,
-          internalMax
-        );
-        const rawStanding = item.standing as CaeStanding;
-        const standing: CaeStanding = VALID_CAE_STANDINGS.has(rawStanding) ? rawStanding : 'pending';
-        const classAvgCae1 =
-          item.classAvgCae1 === null || item.classAvgCae1 === undefined
-            ? undefined
-            : assertFiniteNumber(item.classAvgCae1, `caeMarks[${idx}].classAvgCae1`, issues, 0, cae1Max);
-        const classAvgCae2 =
-          item.classAvgCae2 === null || item.classAvgCae2 === undefined
-            ? undefined
-            : assertFiniteNumber(item.classAvgCae2, `caeMarks[${idx}].classAvgCae2`, issues, 0, cae2Max);
-        const classAvgBonus =
-          item.classAvgBonus === null || item.classAvgBonus === undefined
-            ? undefined
-            : assertFiniteNumber(
-                item.classAvgBonus,
-                `caeMarks[${idx}].classAvgBonus`,
-                issues,
-                0,
-                Math.max(internalBonusMax, 100)
-              );
-        const classAvgInternal =
-          item.classAvgInternal === null || item.classAvgInternal === undefined
-            ? undefined
-            : assertFiniteNumber(item.classAvgInternal, `caeMarks[${idx}].classAvgInternal`, issues, 0, internalMax);
-        const classTopInternal =
-          item.classTopInternal === null || item.classTopInternal === undefined
-            ? undefined
-            : assertFiniteNumber(item.classTopInternal, `caeMarks[${idx}].classTopInternal`, issues, 0, internalMax);
-        return {
-          courseCode: assertNonEmptyString(item.courseCode, `caeMarks[${idx}].courseCode`, issues),
-          courseName: assertNonEmptyString(item.courseName, `caeMarks[${idx}].courseName`, issues),
-          credits: assertFiniteNumber(item.credits, `caeMarks[${idx}].credits`, issues, 0, 12),
-          cae1,
-          cae1Max,
-          cae2,
-          cae2Max,
-          internalBonus,
-          internalBonusMax,
-          internalTotal,
-          internalMax,
-          standing,
-          remarks: typeof item.remarks === 'string' && item.remarks.trim() ? item.remarks.trim() : undefined,
-          classAvgCae1,
-          classAvgCae2,
-          classAvgBonus,
-          classAvgInternal,
-          classTopInternal,
-        };
-      });
+    try {
+      caeMarks = validateCaeMarks(input.caeMarks);
+    } catch (err) {
+      if (err instanceof SchemaValidationError) {
+        issues.push(...err.issues);
+      } else {
+        issues.push('caeMarks must be an array when provided');
+      }
     }
   }
 

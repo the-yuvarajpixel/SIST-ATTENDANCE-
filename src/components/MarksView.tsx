@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ArrowRight, TrendingDown, TrendingUp } from 'lucide-react';
+import { ArrowRight, RotateCcw, TrendingDown, TrendingUp, Upload } from 'lucide-react';
 import {
   Area,
   Bar,
@@ -22,6 +22,7 @@ import {
   type SubjectCaeComparisonPoint,
 } from '../core/cae';
 import type { CaeStanding, NavSection, ResultsPayload, SubjectCaeMark } from '../core/types';
+import { CaeUploadPanel } from './CaeUploadPanel';
 import type { SectionState } from './OverviewView';
 import { SectionError, SectionSkeleton, StaleBanner } from './SectionNotice';
 
@@ -29,6 +30,8 @@ interface MarksViewProps {
   section: SectionState<ResultsPayload>;
   onNavigate: (section: NavSection) => void;
   onRetry: () => void;
+  onUploadCaeMarks: (marks: SubjectCaeMark[], mode: 'replace' | 'merge') => Promise<void>;
+  onResetCaeMarks: () => Promise<void>;
 }
 
 type MarksFilter = 'all' | 'strong' | 'on-track' | 'needs-improvement';
@@ -303,16 +306,25 @@ function AllSubjectsComparisonTooltip({ active, payload, scale }: AllSubjectsToo
   );
 }
 
-export function MarksView({ section, onNavigate, onRetry }: MarksViewProps) {
+export function MarksView({
+  section,
+  onNavigate,
+  onRetry,
+  onUploadCaeMarks,
+  onResetCaeMarks,
+}: MarksViewProps) {
   const [filter, setFilter] = useState<MarksFilter>('all');
   const [trendScale, setTrendScale] = useState<TrendScale>('marks');
   const [showCaeBreakdown, setShowCaeBreakdown] = useState(true);
   const [selectedCourseCode, setSelectedCourseCode] = useState<string | null>(null);
   const [deepDiveMode, setDeepDiveMode] = useState<DeepDiveMode>('subject');
   const [deepDiveScale, setDeepDiveScale] = useState<TrendScale>('percent');
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [resettingUploaded, setResettingUploaded] = useState(false);
 
   const payload = section.envelope?.data ?? null;
   const marks = payload?.caeMarks ?? [];
+  const hasUploadedData = Boolean(payload?.caeMarksUploaded);
 
   const selectedSubject = useMemo(() => {
     if (marks.length === 0) return null;
@@ -465,6 +477,20 @@ export function MarksView({ section, onNavigate, onRetry }: MarksViewProps) {
 
             <button
               type="button"
+              onClick={() => setUploadOpen((prev) => !prev)}
+              aria-expanded={uploadOpen}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                uploadOpen
+                  ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-300'
+                  : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+            >
+              <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{uploadOpen ? 'Close Upload' : 'Upload CAE Data'}</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => onNavigate('results')}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3.5 py-2 text-xs font-medium text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
@@ -475,32 +501,92 @@ export function MarksView({ section, onNavigate, onRetry }: MarksViewProps) {
         </div>
       </section>
 
+      {hasUploadedData ? (
+        <div
+          role="status"
+          className="rounded-xl border border-blue-200 dark:border-blue-900/60 bg-blue-50/70 dark:bg-blue-950/30 px-4 py-3 text-xs text-blue-900 dark:text-blue-200 flex flex-wrap items-center justify-between gap-3"
+        >
+          <span>
+            Showing your uploaded Continuous Assessment (CAE) marks ({marks.length}{' '}
+            {marks.length === 1 ? 'subject' : 'subjects'}). All charts, KPIs, and ESE grade targets reflect your uploaded data.
+          </span>
+          <div className="flex items-center gap-3 shrink-0">
+            <button
+              type="button"
+              onClick={() => setUploadOpen(true)}
+              className="font-medium underline cursor-pointer whitespace-nowrap"
+            >
+              Edit / Upload More
+            </button>
+            <button
+              type="button"
+              disabled={resettingUploaded}
+              onClick={async () => {
+                setResettingUploaded(true);
+                try {
+                  await onResetCaeMarks();
+                } finally {
+                  setResettingUploaded(false);
+                }
+              }}
+              className="inline-flex items-center gap-1 font-medium text-blue-800 dark:text-blue-300 hover:underline cursor-pointer disabled:opacity-50 whitespace-nowrap"
+            >
+              <RotateCcw className="h-3 w-3" aria-hidden="true" />
+              {resettingUploaded ? 'Resetting...' : 'Reset to Portal Data'}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {uploadOpen ? (
+        <CaeUploadPanel
+          existingMarks={marks}
+          hasUploadedData={hasUploadedData}
+          onUpload={onUploadCaeMarks}
+          onReset={onResetCaeMarks}
+          onClose={() => setUploadOpen(false)}
+        />
+      ) : null}
+
       {section.loading && !payload ? (
         <SectionSkeleton rows={6} />
-      ) : section.error && !payload ? (
-        <SectionError sectionName="CAE Marks" message={section.error} onRetry={onRetry} />
+      ) : section.error && !payload && !uploadOpen ? (
+        <div className="space-y-4">
+          <SectionError sectionName="CAE Marks" message={section.error} onRetry={onRetry} />
+          <div className="flex justify-center">
+            <button
+              type="button"
+              onClick={() => setUploadOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-4 py-2 text-xs font-medium text-white transition-colors cursor-pointer"
+            >
+              <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+              Upload CAE Marks Manually / CSV
+            </button>
+          </div>
+        </div>
       ) : marks.length === 0 ? (
         <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 text-center space-y-3">
           <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
             No CAE marks published for the current term yet
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-            Once CAE 1 or CAE 2 scores are uploaded to Sathyabama ERP, refresh to view subject-wise internal marks, multi-term trends, and end-semester grade targets here.
+            Upload your CAE 1 / CAE 2 scores via CSV, JSON, Excel paste, or manual entry — or refresh from Sathyabama ERP once published.
           </p>
-          <div className="pt-1 flex items-center justify-center gap-3">
+          <div className="pt-1 flex flex-wrap items-center justify-center gap-3">
             <button
               type="button"
-              onClick={onRetry}
-              className="rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-4 py-2 text-xs font-medium text-white transition-colors whitespace-nowrap cursor-pointer"
+              onClick={() => setUploadOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-4 py-2 text-xs font-medium text-white transition-colors whitespace-nowrap cursor-pointer"
             >
-              Refresh from ERP
+              <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+              Upload CAE Data
             </button>
             <button
               type="button"
-              onClick={() => onNavigate('results')}
+              onClick={onRetry}
               className="rounded-lg border border-slate-200 dark:border-slate-700 px-4 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
             >
-              Plan grades in CGPA Planner
+              Refresh from ERP
             </button>
           </div>
         </section>

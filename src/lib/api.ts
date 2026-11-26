@@ -10,6 +10,7 @@ import type {
   SectionEnvelope,
   SessionUser,
   StudentProfile,
+  SubjectCaeMark,
   TimetableSlot,
 } from '../core/types';
 
@@ -136,6 +137,20 @@ export const api = {
 
   getResults(refresh = false) {
     return requestJson<SectionEnvelope<ResultsPayload>>(`/api/portal/results${refresh ? '?refresh=1' : ''}`);
+  },
+
+  uploadCaeMarks(marks: SubjectCaeMark[], mode: 'replace' | 'merge' = 'merge') {
+    return requestJson<SectionEnvelope<ResultsPayload>>('/api/portal/cae-marks', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'upload', mode, marks }),
+    });
+  },
+
+  resetCaeMarks() {
+    return requestJson<SectionEnvelope<ResultsPayload>>('/api/portal/cae-marks', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'reset' }),
+    });
   },
 
   getDeadlines(refresh = false) {

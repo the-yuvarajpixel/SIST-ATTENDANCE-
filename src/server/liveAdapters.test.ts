@@ -56,7 +56,7 @@ test('exchangeMoodleCredentialsForToken posts credentials in form body and retur
   );
 });
 
-test('exchangeErpCredentialsForToken posts JSON credentials and extracts Sathyabama ERP accessToken', async () => {
+test('exchangeErpCredentialsForToken posts JSON credentials with official origin headers and extracts Sathyabama ERP accessToken', async () => {
   let capturedUrl = '';
   let capturedInit: RequestInit | undefined;
 
@@ -84,6 +84,12 @@ test('exchangeErpCredentialsForToken posts JSON credentials and extracts Sathyab
   assert.equal(capturedUrl, 'https://erp.sathyabama.ac.in/erp/api/v1.0/MasterStudent/login_sec');
   assert.equal(capturedInit?.method, 'POST');
   assert.equal(capturedInit?.redirect, 'error');
+  const sentHeaders = (capturedInit?.headers ?? {}) as Record<string, string>;
+  assert.equal(sentHeaders.Origin, 'https://erp.sathyabama.ac.in');
+  assert.equal(sentHeaders.Referer, 'https://erp.sathyabama.ac.in/account/login');
+  assert.equal(sentHeaders['Sec-Fetch-Site'], 'same-origin');
+  assert.equal(sentHeaders['Sec-Fetch-Mode'], 'cors');
+  assert.equal(sentHeaders['Sec-Fetch-Dest'], 'empty');
   const sentBody = JSON.parse(String(capturedInit?.body));
   assert.equal(sentBody.RegisterNumber, '42110482');
   assert.equal(sentBody.Password, 'erp-secret-pass');
@@ -108,7 +114,7 @@ test('exchangeErpCredentialsForToken posts JSON credentials and extracts Sathyab
       err.status === 403 &&
       err.code === 'erp_browser_login_required' &&
       err.field === 'erpPassword' &&
-      /Sign in directly on erp\.sathyabama\.ac\.in/i.test(err.message)
+      /erp\.sathyabama\.ac\.in/i.test(err.message)
   );
 });
 
@@ -467,7 +473,7 @@ test('getLiveAdapterConfig defaults to Sathyabama ERP & LMS, flags invalid URLs,
   assert.equal(probe.statusCode, 200);
 });
 
-test('exchangeErpCredentialsForToken routes staff role to staff login endpoint and includes role-specific fields', async () => {
+test('exchangeErpCredentialsForToken routes staff, new-admission, and parent roles to verified ERP login endpoints', async () => {
   let capturedUrl = '';
   let capturedBody: Record<string, unknown> = {};
 
@@ -478,25 +484,47 @@ test('exchangeErpCredentialsForToken routes staff role to staff login endpoint a
       status: 1,
       responseData: {
         login: {
-          accessToken: 'eyJhbGciOiJIUzI1NiJ9.staff_token_999',
-          name: 'Dr. R. Meenakshi',
+          accessToken: 'eyJhbGciOiJIUzI1NiJ9.role_token_999',
+          StaffName: 'Dr. R. Meenakshi',
+          StaffId: 504,
         },
       },
     });
   };
 
-  const res = await exchangeErpCredentialsForToken('STF1042', 'staff-pass', {
+  const staffRes = await exchangeErpCredentialsForToken('meenakshi@sathyabama.ac.in', 'staff-pass', {
     role: 'staff',
     fetchImpl: mockFetch,
     env: { ERP_BASE_URL: 'https://erp.sathyabama.ac.in' },
   });
 
-  assert.equal(res.role, 'staff');
-  assert.equal(res.token, 'eyJhbGciOiJIUzI1NiJ9.staff_token_999');
-  assert.equal(capturedUrl, 'https://erp.sathyabama.ac.in/erp/api/v1.0/MasterStaff/login_sec');
-  assert.equal(capturedBody.StaffNumber, 'STF1042');
-  assert.equal(capturedBody.EmployeeCode, 'STF1042');
-  assert.equal(capturedBody.UserType, 'Staff');
+  assert.equal(staffRes.role, 'staff');
+  assert.equal(staffRes.token, 'eyJhbGciOiJIUzI1NiJ9.role_token_999');
+  assert.equal(staffRes.studentName, 'Dr. R. Meenakshi');
+  assert.equal(staffRes.studentId, '504');
+  assert.equal(capturedUrl, 'https://erp.sathyabama.ac.in/erp/api/v1.0/Staff/login');
+  assert.equal(capturedBody.email, 'meenakshi@sathyabama.ac.in');
+  assert.equal(capturedBody.password, 'staff-pass');
+
+  const admRes = await exchangeErpCredentialsForToken('ADM2026041', 'adm-pass', {
+    role: 'new-admission',
+    fetchImpl: mockFetch,
+    env: { ERP_BASE_URL: 'https://erp.sathyabama.ac.in' },
+  });
+  assert.equal(admRes.role, 'new-admission');
+  assert.equal(capturedUrl, 'https://erp.sathyabama.ac.in/erp/api/v1.0/QuickAdmission/login');
+  assert.equal(capturedBody.AppNo, 'ADM2026041');
+  assert.equal(capturedBody.Password, 'adm-pass');
+
+  const parentRes = await exchangeErpCredentialsForToken('42110482', 'parent-pass', {
+    role: 'parent',
+    fetchImpl: mockFetch,
+    env: { ERP_BASE_URL: 'https://erp.sathyabama.ac.in' },
+  });
+  assert.equal(parentRes.role, 'parent');
+  assert.equal(capturedUrl, 'https://erp.sathyabama.ac.in/erp/api/v1.0/Parent/login_erp_p_new');
+  assert.equal(capturedBody.RegisterNumber, '42110482');
+  assert.equal(capturedBody.Password, 'parent-pass');
 });
 
 test('fetchLiveAttendance forwards custom endDate as ToDate and EndDate to College ERP', async () => {

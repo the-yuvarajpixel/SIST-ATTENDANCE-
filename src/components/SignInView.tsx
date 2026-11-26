@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { BookOpen, CheckCircle2, ChevronDown, ExternalLink, Info, Lock, Moon, Sun } from 'lucide-react';
+import { BookOpen, CheckCircle2, ChevronDown, ClipboardPaste, ExternalLink, Info, Lock, Moon, Sun } from 'lucide-react';
 import type { DataSourceMode, ErpUserRole, LiveAdaptersSummary, SessionUser } from '../core/types';
 import { api } from '../lib/api';
 import { AppFooter } from './AppFooter';
@@ -31,14 +31,14 @@ const ERP_ROLES: {
   {
     id: 'staff',
     label: 'Staff',
-    idLabel: 'Staff Number',
-    idPlaceholder: 'e.g. STF1042',
-    helper: 'Faculty and department staff accounts',
+    idLabel: 'Official Email or Staff ID',
+    idPlaceholder: 'e.g. faculty@sathyabama.ac.in',
+    helper: 'Faculty & staff (official @sathyabama.ac.in email)',
   },
   {
     id: 'new-admission',
     label: 'New Admission',
-    idLabel: 'Admission / Register Number',
+    idLabel: 'Application Number',
     idPlaceholder: 'e.g. ADM2026041',
     helper: 'Newly admitted applicants & first-year onboarding',
   },
@@ -52,12 +52,24 @@ const ERP_ROLES: {
 ];
 
 const PORTAL_ID_REGEX = /^[A-Za-z0-9_-]{4,20}$/;
+const STAFF_EMAIL_REGEX = /^[A-Za-z0-9._%+-]{2,64}@[A-Za-z0-9.-]{2,80}\.[A-Za-z]{2,12}$/;
+
+function isValidPortalId(id: string, role: ErpUserRole): boolean {
+  if (PORTAL_ID_REGEX.test(id)) return true;
+  return role === 'staff' && STAFF_EMAIL_REGEX.test(id);
+}
+
+function cleanPastedToken(raw: string): string {
+  return raw.trim().replace(/^["']+|["']+$/g, '').trim();
+}
 
 export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOpenGuide }: SignInViewProps) {
   const [mode, setMode] = useState<DataSourceMode>(initialMode ?? 'mock');
   const [liveAuthMethod, setLiveAuthMethod] = useState<LiveAuthMethod>('auto-login');
   const [erpRole, setErpRole] = useState<ErpUserRole>('student');
   const [showTokenGuide, setShowTokenGuide] = useState(false);
+  const [showOptionalErpToken, setShowOptionalErpToken] = useState(false);
+  const [clipboardNotice, setClipboardNotice] = useState<string | null>(null);
   const [liveAdapters, setLiveAdapters] = useState<LiveAdaptersSummary | null>(null);
   const [registerNumber, setRegisterNumber] = useState('');
   const [name, setName] = useState('');
@@ -106,16 +118,16 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
 
     const nextFieldErrors: Record<string, string> = {};
     const rawReg = registerNumber.trim();
-    const trimmedErpToken = erpToken.trim();
-    const trimmedLmsToken = lmsToken.trim();
+    const trimmedErpToken = cleanPastedToken(erpToken);
+    const trimmedLmsToken = cleanPastedToken(lmsToken);
     const rawLmsUser = lmsUsername.trim();
     const rawErpUser = erpUsername.trim();
 
-    // Auto-infer register/staff number if typed into ERP or Moodle ID input
+    // Auto-infer register/staff ID if typed into ERP or Moodle ID input
     const inferredReg =
       rawReg ||
-      (PORTAL_ID_REGEX.test(rawErpUser) ? rawErpUser : '') ||
-      (PORTAL_ID_REGEX.test(rawLmsUser) ? rawLmsUser : '');
+      (isValidPortalId(rawErpUser, erpRole) ? rawErpUser : '') ||
+      (isValidPortalId(rawLmsUser, erpRole) ? rawLmsUser : '');
 
     const resolvedErpUsername = (rawErpUser || inferredReg).trim();
     const resolvedLmsUsername = (rawLmsUser || inferredReg).trim();
@@ -126,8 +138,11 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
     const wantsLmsAuto = liveAuthMethod === 'auto-login' && Boolean(lmsPassword || rawLmsUser);
     const wantsLmsToken = liveAuthMethod === 'direct-website' && Boolean(trimmedLmsToken);
 
-    if (!inferredReg || !PORTAL_ID_REGEX.test(inferredReg)) {
-      nextFieldErrors.registerNumber = `Enter a valid ${roleMeta.idLabel} (4–20 letters or digits).`;
+    if (!inferredReg || !isValidPortalId(inferredReg, erpRole)) {
+      nextFieldErrors.registerNumber =
+        erpRole === 'staff'
+          ? 'Enter a valid official email (e.g. faculty@sathyabama.ac.in) or staff ID.'
+          : `Enter a valid ${roleMeta.idLabel} (4–20 letters or digits).`;
     }
 
     if (mode === 'live') {
@@ -187,6 +202,9 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
       const eObj = err as Error & { code?: string; fieldErrors?: Record<string, string> };
       setFormError(eObj.message || 'Sign in failed.');
       setFormErrorCode(eObj.code ?? null);
+      if (eObj.code === 'erp_browser_login_required') {
+        setShowOptionalErpToken(true);
+      }
       if (eObj.fieldErrors) setFieldErrors(eObj.fieldErrors);
     } finally {
       setSubmitting(false);
@@ -205,10 +223,37 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
 
   function focusOptionalErpToken() {
     setLiveAuthMethod('auto-login');
+    setShowOptionalErpToken(true);
     setFieldErrors({});
     setFormError(null);
     setFormErrorCode(null);
     window.setTimeout(() => erpTokenInputRef.current?.focus(), 50);
+  }
+
+  async function pasteErpTokenFromClipboard() {
+    setClipboardNotice(null);
+    if (!navigator.clipboard?.readText) {
+      setClipboardNotice('Clipboard read is unavailable in this browser — press Ctrl+V / Cmd+V in the box.');
+      erpTokenInputRef.current?.focus();
+      return;
+    }
+    try {
+      const text = cleanPastedToken(await navigator.clipboard.readText());
+      if (!text || text.length < 8) {
+        setClipboardNotice('Clipboard did not contain an ERP Access-Token. Copy it first or use password login.');
+        return;
+      }
+      setErpToken(text);
+      setFieldErrors((prev) => {
+        const next = { ...prev };
+        delete next.erpToken;
+        return next;
+      });
+      setClipboardNotice('Access-Token pasted from clipboard — click Login & Sync Portal.');
+    } catch {
+      setClipboardNotice('Allow clipboard permission or press Ctrl+V / Cmd+V in the box.');
+      erpTokenInputRef.current?.focus();
+    }
   }
 
   return (
@@ -433,7 +478,7 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                   {showTokenGuide ? (
                     <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-1.5 text-slate-600 dark:text-slate-400 leading-relaxed">
                       <p>
-                        <strong className="text-slate-800 dark:text-slate-200">College ERP ({erpHost}):</strong> Choose Student, Staff, New Admission, or Parent, enter your Register / Staff Number and ERP Password, or optionally paste your <span className="font-mono">Access-Token</span> from <em>F12 → Application → Local Storage</em> if browser verification is required.
+                        <strong className="text-slate-800 dark:text-slate-200">Automatic College ERP ({erpHost}):</strong> Choose Student, Staff, New Admission, or Parent and enter your ID and ERP password. The server signs into {erpHost} automatically and encrypts your session token in an HttpOnly cookie.
                       </p>
                       <p>
                         <strong className="text-slate-800 dark:text-slate-200">Moodle LMS ({lmsHost}):</strong> Enter your Moodle username and password below to auto-sync deadlines and course notices alongside ERP.
@@ -540,15 +585,16 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
 
                   {liveAuthMethod === 'auto-login' ? (
                     <div className="space-y-3.5">
-                      {/* 1. College ERP Direct Login (Role + Reg/Staff No + Password + Optional Token) */}
+                      {/* 1. College ERP Direct Automatic Login (Role + ID + Password + Optional Token Fallback) */}
                       <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/50 p-3.5 space-y-3">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="min-w-0">
                             <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
                               College ERP ({erpHost})
                             </span>
-                            <span className="ml-2 text-[11px] text-slate-500 dark:text-slate-400">
-                              {roleMeta.label} · Attendance, Timetable &amp; CGPA
+                            <span className="ml-2 inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+                              <CheckCircle2 className="h-3 w-3 shrink-0" aria-hidden="true" />
+                              Automatic Login Enabled
                             </span>
                           </div>
                           <a
@@ -561,6 +607,10 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                             <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
                           </a>
                         </div>
+
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                          Signs directly into {erpHost} as <strong className="text-slate-700 dark:text-slate-300">{roleMeta.label}</strong> and syncs attendance, timetable, CAE marks, and CGPA automatically — no token pasting needed.
+                        </p>
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div>
@@ -609,26 +659,51 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                           </div>
                         </div>
 
-                        <div className="pt-2 border-t border-slate-200/80 dark:border-slate-800/80">
-                          <label
-                            htmlFor="autoErpToken"
-                            className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                        <div className="pt-2 border-t border-slate-200/80 dark:border-slate-800/80 space-y-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowOptionalErpToken((v) => !v)}
+                            aria-expanded={showOptionalErpToken}
+                            className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-600 dark:text-slate-400 hover:text-blue-700 dark:hover:text-blue-400 transition-colors cursor-pointer"
                           >
-                            ERP Access-Token (optional)
-                          </label>
-                          <input
-                            ref={erpTokenInputRef}
-                            id="autoErpToken"
-                            name="erpToken"
-                            type="password"
-                            value={erpToken}
-                            onChange={(e) => setErpToken(e.target.value)}
-                            placeholder="Optional: paste Access-Token from erp.sathyabama.ac.in Local Storage"
-                            aria-invalid={Boolean(fieldErrors.erpToken)}
-                            className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
-                          />
-                          {fieldErrors.erpToken ? (
-                            <p className="mt-1 text-xs text-red-700 dark:text-red-400">{fieldErrors.erpToken}</p>
+                            <ChevronDown
+                              className={`h-3.5 w-3.5 transition-transform ${showOptionalErpToken ? 'rotate-180' : ''}`}
+                              aria-hidden="true"
+                            />
+                            Or paste ERP Access-Token manually (optional OTP fallback)
+                          </button>
+
+                          {showOptionalErpToken ? (
+                            <div className="space-y-1.5">
+                              <div className="flex items-center gap-2">
+                                <input
+                                  ref={erpTokenInputRef}
+                                  id="autoErpToken"
+                                  name="erpToken"
+                                  type="password"
+                                  value={erpToken}
+                                  onChange={(e) => setErpToken(e.target.value)}
+                                  placeholder="Optional: paste Access-Token from erp.sathyabama.ac.in"
+                                  aria-label="ERP Access-Token (optional)"
+                                  aria-invalid={Boolean(fieldErrors.erpToken)}
+                                  className="flex-1 min-w-0 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => void pasteErpTokenFromClipboard()}
+                                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                                >
+                                  <ClipboardPaste className="h-3.5 w-3.5" aria-hidden="true" />
+                                  Paste
+                                </button>
+                              </div>
+                              {clipboardNotice ? (
+                                <p className="text-[11px] text-slate-600 dark:text-slate-400">{clipboardNotice}</p>
+                              ) : null}
+                              {fieldErrors.erpToken ? (
+                                <p className="text-xs text-red-700 dark:text-red-400">{fieldErrors.erpToken}</p>
+                              ) : null}
+                            </div>
                           ) : null}
                         </div>
                       </div>

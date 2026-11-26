@@ -42,9 +42,9 @@ const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MB cap per upstream JSON respon
 
 const DEFAULT_ERP_PATHS = {
   login: '/erp/api/v1.0/MasterStudent/login_sec',
-  staffLogin: '/erp/api/v1.0/MasterStaff/login_sec',
-  admissionLogin: '/erp/api/v1.0/MasterStudent/login_sec',
-  parentLogin: '/erp/api/v1.0/MasterStudent/login_sec',
+  staffLogin: '/erp/api/v1.0/Staff/login',
+  admissionLogin: '/erp/api/v1.0/QuickAdmission/login',
+  parentLogin: '/erp/api/v1.0/Parent/login_erp_p_new',
   studentLookup: '/erp/api/v1.0/MasterStudent/StudentRegNoAutoSuggest',
   profile: '/erp/api/v1.0/MasterStudent/view',
   attendance: '/erp/api/v1.0/StudentAttendanceHourly/getStudentAcademicHourwise',
@@ -219,15 +219,33 @@ async function readBoundedJson(res: Response, sourceLabel: string): Promise<unkn
   }
 }
 
+const ERP_BROWSER_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+function buildErpOriginHeaders(erpBaseUrl: string, refererPath = '/'): Record<string, string> {
+  const origin = new URL(erpBaseUrl).origin;
+  const safeRefererPath = refererPath.startsWith('/') ? refererPath : `/${refererPath}`;
+  return {
+    Origin: origin,
+    Referer: `${origin}${safeRefererPath}`,
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
+    'User-Agent': ERP_BROWSER_USER_AGENT,
+  };
+}
+
 function buildErpAuthHeaders(
   erpToken: string,
   registerNumber: string,
-  withJsonBody = false
+  withJsonBody = false,
+  erpBaseUrl?: string
 ): Record<string, string> {
-  const trimmed = erpToken.trim();
+  const trimmed = erpToken.trim().replace(/^["']+|["']+$/g, '').trim();
   const headers: Record<string, string> = {
-    Accept: 'application/json',
+    Accept: 'application/json, text/plain, */*',
     'X-Register-Number': registerNumber,
+    ...(erpBaseUrl ? buildErpOriginHeaders(erpBaseUrl, '/') : {}),
   };
   if (withJsonBody) {
     headers['Content-Type'] = 'application/json';
@@ -277,7 +295,7 @@ async function requestErpJson(
   try {
     res = await fetchImpl(targetUrl, {
       method,
-      headers: buildErpAuthHeaders(erpToken, registerNumber, hasBody),
+      headers: buildErpAuthHeaders(erpToken, registerNumber, hasBody, config.erpBaseUrl),
       body: hasBody ? JSON.stringify(options.body ?? {}) : undefined,
       redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
@@ -621,32 +639,52 @@ export async function exchangeErpCredentialsForToken(
   const trimmedUser = username.trim();
 
   // Credentials are sent strictly in HTTPS POST JSON body and discarded immediately (never stored or logged).
-  const payload: Record<string, unknown> = {
-    RegisterNumber: trimmedUser,
-    username: trimmedUser,
-    Password: password,
-    password,
-    UserType: ERP_USER_TYPE_LABELS[role],
-    Role: role,
-    CapchaKey: generateErpCaptchaKey(48),
-    TurnstileToken: '',
-  };
-  if (role === 'staff') {
-    payload.StaffNumber = trimmedUser;
-    payload.EmployeeCode = trimmedUser;
-  } else if (role === 'new-admission') {
-    payload.ApplicationNumber = trimmedUser;
-  } else if (role === 'parent') {
-    payload.ParentId = trimmedUser;
-  }
+  const captchaKey = generateErpCaptchaKey(48);
+  const payload: Record<string, unknown> =
+    role === 'staff'
+      ? {
+          email: trimmedUser,
+          password,
+          StaffNumber: trimmedUser,
+          EmployeeCode: trimmedUser,
+          UserType: ERP_USER_TYPE_LABELS[role],
+          CapchaKey: captchaKey,
+          TurnstileToken: '',
+        }
+      : role === 'new-admission'
+        ? {
+            AppNo: trimmedUser,
+            ApplicationNumber: trimmedUser,
+            Password: password,
+            UserType: ERP_USER_TYPE_LABELS[role],
+            CapchaKey: captchaKey,
+            TurnstileToken: '',
+          }
+        : role === 'parent'
+          ? {
+              RegisterNumber: trimmedUser,
+              ParentId: trimmedUser,
+              Password: password,
+              UserType: ERP_USER_TYPE_LABELS[role],
+              CapchaKey: captchaKey,
+              TurnstileToken: '',
+            }
+          : {
+              RegisterNumber: trimmedUser,
+              Password: password,
+              UserType: ERP_USER_TYPE_LABELS[role],
+              CapchaKey: captchaKey,
+              TurnstileToken: '',
+            };
 
   let res: Response;
   try {
     res = await fetchImpl(endpoint, {
       method: 'POST',
       headers: {
-        Accept: 'application/json',
+        Accept: 'application/json, text/plain, */*',
         'Content-Type': 'application/json',
+        ...buildErpOriginHeaders(config.erpBaseUrl, '/account/login'),
       },
       body: JSON.stringify(payload),
       redirect: 'error',
@@ -663,7 +701,7 @@ export async function exchangeErpCredentialsForToken(
     );
   }
 
-  const browserLoginMessage = `Sathyabama ERP blocks automated password sign-in outside ${config.erpHost}. Sign in directly on ${config.erpHost} in your browser, then paste your Access-Token to sync attendance, timetable, and CGPA.`;
+  const browserLoginMessage = `College ERP (${config.erpHost}) requested additional browser verification for this sign-in. You can sign in on ${config.erpHost} and paste your Access-Token as a fallback.`;
 
   const parsed = await readBoundedJson(res, 'College ERP').catch((err) => {
     if (!res.ok) {
@@ -675,7 +713,7 @@ export async function exchangeErpCredentialsForToken(
       }
       throw new LiveUpstreamError(
         res.status === 401 ? 401 : 502,
-        `College ERP login returned HTTP ${res.status}. Sign in directly at ${config.erpHost} and paste your Access-Token.`,
+        `College ERP login returned HTTP ${res.status}. Check your credentials or paste your Access-Token.`,
         {
           code: res.status === 401 ? undefined : 'erp_browser_login_required',
           field: 'erpPassword',
@@ -698,6 +736,11 @@ export async function exchangeErpCredentialsForToken(
           ? (rec.data as Record<string, unknown>)
           : null;
 
+    const headerToken =
+      res.headers.get('access-token') ||
+      res.headers.get('Access-Token') ||
+      (res.headers.get('authorization')?.replace(/^bearer\s+/i, '').trim() ?? null);
+
     const rawToken =
       (loginObj &&
         (typeof loginObj.accessToken === 'string'
@@ -707,13 +750,20 @@ export async function exchangeErpCredentialsForToken(
             : typeof loginObj.access_token === 'string'
               ? loginObj.access_token
               : null)) ||
+      (responseData &&
+        (typeof responseData.accessToken === 'string'
+          ? responseData.accessToken
+          : typeof responseData.token === 'string'
+            ? responseData.token
+            : null)) ||
       (typeof rec.accessToken === 'string'
         ? rec.accessToken
         : typeof rec.token === 'string'
           ? rec.token
           : typeof rec.access_token === 'string'
             ? rec.access_token
-            : null);
+            : null) ||
+      (headerToken && headerToken.trim().length >= 8 ? headerToken.trim() : null);
 
     const statusOk = rec.status === undefined || rec.status === 1 || rec.status === true || rec.status === '1';
 
@@ -721,10 +771,22 @@ export async function exchangeErpCredentialsForToken(
       const studentName =
         loginObj && typeof loginObj.StudentName === 'string' && loginObj.StudentName.trim()
           ? loginObj.StudentName.trim()
-          : loginObj && typeof loginObj.name === 'string' && loginObj.name.trim()
-            ? loginObj.name.trim()
-            : undefined;
-      const rawSid = loginObj ? loginObj.StudentId ?? loginObj.IdentityId ?? loginObj.studentId : undefined;
+          : loginObj && typeof loginObj.StaffName === 'string' && loginObj.StaffName.trim()
+            ? loginObj.StaffName.trim()
+            : loginObj && typeof loginObj.ParentName === 'string' && loginObj.ParentName.trim()
+              ? loginObj.ParentName.trim()
+              : loginObj && typeof loginObj.FullName === 'string' && loginObj.FullName.trim()
+                ? loginObj.FullName.trim()
+                : loginObj && typeof loginObj.name === 'string' && loginObj.name.trim()
+                  ? loginObj.name.trim()
+                  : undefined;
+      const rawSid = loginObj
+        ? loginObj.StudentId ??
+          loginObj.StaffId ??
+          loginObj.AdmissionId ??
+          loginObj.IdentityId ??
+          loginObj.studentId
+        : undefined;
       const studentId =
         typeof rawSid === 'number' && Number.isFinite(rawSid)
           ? String(rawSid)
@@ -732,6 +794,20 @@ export async function exchangeErpCredentialsForToken(
             ? rawSid.trim()
             : extractErpStudentIdFromToken(rawToken);
       return { token: rawToken.trim(), studentName, studentId, role };
+    }
+
+    const otpRequired =
+      loginObj &&
+      (loginObj.IsLoginOTPRequired === 1 ||
+        loginObj.IsStaffLoginOTPRequired === 1 ||
+        loginObj.IsStudenfLogintOTPRequired === 1);
+
+    if (res.ok && statusOk && otpRequired && !rawToken) {
+      throw new LiveUpstreamError(
+        403,
+        `Your College ERP account requires one-time OTP verification on ${config.erpHost}. Complete OTP sign-in there and paste your Access-Token as a fallback.`,
+        { code: 'erp_browser_login_required', field: 'erpPassword' }
+      );
     }
 
     const upstreamMsg =
@@ -783,7 +859,7 @@ export async function exchangeErpCredentialsForToken(
 
   throw new LiveUpstreamError(
     502,
-    `College ERP did not return an access token. Sign in directly at ${config.erpHost} and paste your Access-Token.`,
+    `College ERP did not return an access token. Check your credentials or paste your Access-Token from ${config.erpHost}.`,
     { code: 'erp_browser_login_required', field: 'erpPassword' }
   );
 }

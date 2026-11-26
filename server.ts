@@ -3,9 +3,12 @@ import path from 'node:path';
 import express from 'express';
 import { getTodayLocalDateKey, normalizeAttendanceEndDate } from './src/core/attendance';
 import { TwoTierCache } from './src/core/cache';
+import { mergeCaeMarks } from './src/core/caeUpload';
 import { LiveUpstreamError } from './src/core/liveParsers';
 import {
+  SchemaValidationError,
   validateAttendance,
+  validateCaeMarks,
   validateDeadlines,
   validateNotifications,
   validateProfile,
@@ -20,7 +23,9 @@ import type {
   HealthReport,
   PortalSyncReport,
   PortalSyncSectionResult,
+  ResultsPayload,
   SectionEnvelope,
+  SubjectCaeMark,
 } from './src/core/types';
 import {
   exchangeErpCredentialsForToken,
@@ -62,6 +67,17 @@ const DEFAULT_MODE: DataSourceMode = process.env.DATA_SOURCE === 'live' ? 'live'
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_TOKEN_LENGTH = 1500;
 const PORTAL_ID_REGEX = /^[A-Za-z0-9_-]{4,20}$/;
+const STAFF_EMAIL_REGEX = /^[A-Za-z0-9._%+-]{2,64}@[A-Za-z0-9.-]{2,80}\.[A-Za-z]{2,12}$/;
+
+function isValidPortalId(id: string, role: ErpUserRole): boolean {
+  if (PORTAL_ID_REGEX.test(id)) return true;
+  return role === 'staff' && STAFF_EMAIL_REGEX.test(id);
+}
+
+function normalizePastedToken(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw.trim().replace(/^["']+|["']+$/g, '').trim();
+}
 
 function parseErpRole(raw: unknown): ErpUserRole {
   if (raw === 'staff' || raw === 'new-admission' || raw === 'parent' || raw === 'student') {
@@ -74,6 +90,19 @@ const cache = new TwoTierCache();
 
 // Per-user simulated ERP outage toggle so users can verify stale-while-error resilience live.
 const simulatedErpOutage = new Set<string>();
+
+// Per-user uploaded CAE marks overlay (bounded to prevent memory exhaustion, cleared on logout).
+const uploadedCaeMarks = new Map<string, SubjectCaeMark[]>();
+
+function applyUploadedCaeOverlay(userHash: string, payload: ResultsPayload): ResultsPayload {
+  const custom = uploadedCaeMarks.get(userHash);
+  if (!custom || custom.length === 0) return payload;
+  return {
+    ...payload,
+    caeMarks: custom,
+    caeMarksUploaded: true,
+  };
+}
 
 function resolveActiveSession(req: express.Request, res: express.Response): StoredSession | null {
   const { session, explicitlySignedOut } = readSession(req);
@@ -307,12 +336,12 @@ export function createApp() {
     }
     const mode: DataSourceMode = body.mode === 'live' ? 'live' : 'mock';
     const erpRole: ErpUserRole = parseErpRole(body.erpRole);
-    let erpToken = typeof body.erpToken === 'string' ? body.erpToken.trim() : '';
+    let erpToken = normalizePastedToken(body.erpToken);
     const erpUsername = typeof body.erpUsername === 'string' ? body.erpUsername.trim() : '';
     const erpPassword = typeof body.erpPassword === 'string' ? body.erpPassword : '';
     const usingErpCreds = Boolean(erpUsername || erpPassword);
 
-    let lmsToken = typeof body.lmsToken === 'string' ? body.lmsToken.trim() : '';
+    let lmsToken = normalizePastedToken(body.lmsToken);
     const lmsUsername = typeof body.lmsUsername === 'string' ? body.lmsUsername.trim() : '';
     const lmsPassword = typeof body.lmsPassword === 'string' ? body.lmsPassword : '';
     const usingMoodleCreds = Boolean(lmsUsername || lmsPassword);
@@ -321,12 +350,15 @@ export function createApp() {
     if (!registerNumber) {
       fieldErrors.registerNumber =
         erpRole === 'staff'
-          ? 'Enter your Sathyabama staff number (e.g. STF1042).'
+          ? 'Enter your Sathyabama official email or staff number.'
           : erpRole === 'new-admission'
-            ? 'Enter your admission or register number.'
+            ? 'Enter your application or register number.'
             : 'Enter your Sathyabama register number (e.g. 42110482).';
-    } else if (!PORTAL_ID_REGEX.test(registerNumber)) {
-      fieldErrors.registerNumber = 'ID must be 4–20 letters, digits, hyphens, or underscores without spaces.';
+    } else if (!isValidPortalId(registerNumber, erpRole)) {
+      fieldErrors.registerNumber =
+        erpRole === 'staff'
+          ? 'Enter a valid official email (e.g. name@sathyabama.ac.in) or 4–20 character staff ID.'
+          : 'ID must be 4–20 letters, digits, hyphens, or underscores without spaces.';
     }
 
     if (mode === 'live') {
@@ -407,9 +439,9 @@ export function createApp() {
               erpErr instanceof LiveUpstreamError &&
               erpErr.code === 'erp_browser_login_required'
             ) {
-              // Keep the verified Moodle LMS live session instead of discarding it when ERP requires direct website login.
+              // Keep the verified Moodle LMS live session if ERP requests an interactive OTP or browser challenge.
               partialWarning =
-                'Moodle LMS connected and synced! Sathyabama ERP blocks automated password login outside erp.sathyabama.ac.in — open Sync LMS & ERP to sign in directly on erp.sathyabama.ac.in and paste your Access-Token for attendance, timetable, and CGPA.';
+                'Moodle LMS connected and synced! College ERP requested additional verification — open Sync LMS & ERP to retry automatic login or paste an Access-Token fallback.';
             } else {
               throw erpErr;
             }
@@ -484,6 +516,7 @@ export function createApp() {
       );
       cache.clearUser(userHash);
       simulatedErpOutage.delete(userHash);
+      uploadedCaeMarks.delete(userHash);
     }
     clearSessionCookie(req, res);
     res.json({ ok: true });
@@ -509,19 +542,22 @@ export function createApp() {
       typeof body.registerNumber === 'string' && body.registerNumber.trim()
         ? body.registerNumber.trim()
         : session.registerNumber;
-    let incomingErpToken = typeof body.erpToken === 'string' ? body.erpToken.trim() : '';
+    let incomingErpToken = normalizePastedToken(body.erpToken);
     const erpUsername = typeof body.erpUsername === 'string' ? body.erpUsername.trim() : '';
     const erpPassword = typeof body.erpPassword === 'string' ? body.erpPassword : '';
     const usingErpCreds = Boolean(erpUsername || erpPassword);
 
-    let incomingLmsToken = typeof body.lmsToken === 'string' ? body.lmsToken.trim() : '';
+    let incomingLmsToken = normalizePastedToken(body.lmsToken);
     const lmsUsername = typeof body.lmsUsername === 'string' ? body.lmsUsername.trim() : '';
     const lmsPassword = typeof body.lmsPassword === 'string' ? body.lmsPassword : '';
     const usingMoodleCreds = Boolean(lmsUsername || lmsPassword);
 
     const fieldErrors: Record<string, string> = {};
-    if (!PORTAL_ID_REGEX.test(nextRegRaw)) {
-      fieldErrors.registerNumber = 'ID must be 4–20 letters, digits, hyphens, or underscores without spaces.';
+    if (!isValidPortalId(nextRegRaw, erpRole)) {
+      fieldErrors.registerNumber =
+        erpRole === 'staff'
+          ? 'Enter a valid official email (e.g. name@sathyabama.ac.in) or 4–20 character staff ID.'
+          : 'ID must be 4–20 letters, digits, hyphens, or underscores without spaces.';
     }
     if (!incomingErpToken && !usingErpCreds && !incomingLmsToken && !usingMoodleCreds) {
       fieldErrors.lmsToken = 'Provide Moodle LMS or College ERP credentials/tokens to connect.';
@@ -593,7 +629,7 @@ export function createApp() {
             erpErr.code === 'erp_browser_login_required'
           ) {
             partialWarning =
-              'Moodle LMS connected! Sathyabama ERP blocks automated password login outside erp.sathyabama.ac.in — sign in directly on erp.sathyabama.ac.in and paste your Access-Token below.';
+              'Moodle LMS connected! College ERP requested additional verification — retry automatic login or paste an Access-Token fallback below.';
           } else {
             throw erpErr;
           }
@@ -723,9 +759,12 @@ export function createApp() {
         label: 'Results & CGPA',
         source: 'ERP',
         usesErp: true,
-        mockLoader: () => buildMockResults(),
-        liveLoader: (s) => fetchLiveResults(s),
-        validator: validateResults,
+        mockLoader: () => applyUploadedCaeOverlay(userHash, buildMockResults()),
+        liveLoader: async (s) => applyUploadedCaeOverlay(userHash, await fetchLiveResults(s)),
+        validator: (raw) => {
+          const validated = validateResults(raw);
+          return uploadedCaeMarks.has(userHash) ? { ...validated, caeMarksUploaded: true } : validated;
+        },
         count: (d) =>
           typeof d === 'object' && d !== null && Array.isArray((d as { semesters?: unknown[] }).semesters)
             ? (d as { semesters: unknown[] }).semesters.length
@@ -1029,15 +1068,154 @@ export function createApp() {
     (s) => fetchLiveTimetable(s),
     validateTimetable
   );
-  registerSection(
-    '/api/portal/results',
-    'results',
-    'ERP',
-    true,
-    () => buildMockResults(),
-    (s) => fetchLiveResults(s),
-    validateResults
-  );
+  app.get('/api/portal/results', async (req, res) => {
+    const session = resolveActiveSession(req, res);
+    if (!session) {
+      res.status(401).json({ error: 'Session expired. Please sign in again.' });
+      return;
+    }
+    const userHash = TwoTierCache.hashUserKey(
+      JSON.stringify([session.registerNumber, session.name, session.exp])
+    );
+    const forceRefresh = req.query.refresh === '1';
+
+    try {
+      const result = await cache.getOrFetch(
+        userHash,
+        'results',
+        CACHE_TTL_MS,
+        async () => {
+          if (simulatedErpOutage.has(userHash)) {
+            throw new Error('ERP portal did not respond within 5s');
+          }
+          const raw =
+            session.mode === 'live' ? await fetchLiveResults(session) : buildMockResults();
+          const validated = validateResults(raw);
+          return applyUploadedCaeOverlay(userHash, validated);
+        },
+        { forceRefresh }
+      );
+
+      const envelope: SectionEnvelope<ResultsPayload> = {
+        data: applyUploadedCaeOverlay(userHash, result.data),
+        stale: result.stale,
+        fetchedAt: result.fetchedAt,
+        source: 'ERP',
+        mode: session.mode,
+        warning: result.warning,
+      };
+      res.json(envelope);
+    } catch (err) {
+      const status = err instanceof LiveUpstreamError ? err.status : 503;
+      const message = err instanceof Error ? err.message : 'Unable to fetch results data.';
+      res.status(status).json({ error: message, section: 'results', source: 'ERP' });
+    }
+  });
+
+  // Upload or reset custom Continuous Assessment (CAE) marks for the current authenticated session
+  app.post('/api/portal/cae-marks', async (req, res) => {
+    const session = resolveActiveSession(req, res);
+    if (!session) {
+      res.status(401).json({ error: 'Sign in required to upload CAE marks.' });
+      return;
+    }
+    const userHash = TwoTierCache.hashUserKey(
+      JSON.stringify([session.registerNumber, session.name, session.exp])
+    );
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const action = body.action === 'reset' ? 'reset' : 'upload';
+
+    try {
+      if (action === 'reset') {
+        uploadedCaeMarks.delete(userHash);
+      } else {
+        const mode: 'replace' | 'merge' = body.mode === 'merge' ? 'merge' : 'replace';
+        const validatedMarks = validateCaeMarks(body.marks);
+        if (validatedMarks.length === 0) {
+          res.status(400).json({ error: 'Provide at least one valid subject CAE mark record.' });
+          return;
+        }
+
+        let existingMarks: SubjectCaeMark[] = [];
+        if (mode === 'merge') {
+          const prevCustom = uploadedCaeMarks.get(userHash);
+          if (prevCustom) {
+            existingMarks = prevCustom;
+          } else {
+            try {
+              const currentResults = await cache.getOrFetch(
+                userHash,
+                'results',
+                CACHE_TTL_MS,
+                async () => {
+                  const raw =
+                    session.mode === 'live' ? await fetchLiveResults(session) : buildMockResults();
+                  return validateResults(raw);
+                }
+              );
+              existingMarks = currentResults.data.caeMarks ?? [];
+            } catch {
+              existingMarks = [];
+            }
+          }
+        }
+
+        const nextMarks = mergeCaeMarks(existingMarks, validatedMarks, mode);
+        if (uploadedCaeMarks.size >= 2048 && !uploadedCaeMarks.has(userHash)) {
+          const oldestKey = uploadedCaeMarks.keys().next().value;
+          if (oldestKey) uploadedCaeMarks.delete(oldestKey);
+        }
+        uploadedCaeMarks.set(userHash, nextMarks);
+      }
+
+      // Refresh cached results payload with the updated CAE marks
+      let basePayload: ResultsPayload;
+      try {
+        const result = await cache.getOrFetch(
+          userHash,
+          'results',
+          CACHE_TTL_MS,
+          async () => {
+            const raw =
+              session.mode === 'live' ? await fetchLiveResults(session) : buildMockResults();
+            return validateResults(raw);
+          },
+          { forceRefresh: action === 'reset' }
+        );
+        basePayload = result.data;
+      } catch {
+        // Allow uploading CAE marks even if live ERP results endpoint is unavailable
+        basePayload = {
+          semesters: [],
+          currentSemester: 1,
+          currentCourses: [],
+          caeMarks: [],
+          caeHistory: [],
+        };
+      }
+
+      const nextPayload =
+        action === 'reset'
+          ? { ...basePayload, caeMarksUploaded: false }
+          : applyUploadedCaeOverlay(userHash, basePayload);
+
+      const envelope: SectionEnvelope<ResultsPayload> = {
+        data: nextPayload,
+        stale: false,
+        fetchedAt: new Date().toISOString(),
+        source: 'ERP',
+        mode: session.mode,
+      };
+      res.json(envelope);
+    } catch (err) {
+      if (err instanceof SchemaValidationError) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      const message = err instanceof Error ? err.message : 'Unable to save CAE marks data.';
+      res.status(400).json({ error: message });
+    }
+  });
   registerSection(
     '/api/portal/deadlines',
     'deadlines',

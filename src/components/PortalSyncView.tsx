@@ -1,8 +1,10 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   AlertTriangle,
   BookOpen,
   CheckCircle2,
+  ChevronDown,
+  ClipboardPaste,
   Clock,
   ExternalLink,
   Link2,
@@ -52,11 +54,21 @@ type PortalConnectMethod = 'credentials' | 'token';
 const MOODLE_LOGIN_URL = 'https://sathyabama.cognibot.in/login/index.php';
 const ERP_URL = 'https://erp.sathyabama.ac.in/account/login';
 const PORTAL_ID_REGEX = /^[A-Za-z0-9_-]{4,20}$/;
+const STAFF_EMAIL_REGEX = /^[A-Za-z0-9._%+-]{2,64}@[A-Za-z0-9.-]{2,80}\.[A-Za-z]{2,12}$/;
+
+function isValidPortalId(id: string, role: ErpUserRole): boolean {
+  if (PORTAL_ID_REGEX.test(id)) return true;
+  return role === 'staff' && STAFF_EMAIL_REGEX.test(id);
+}
+
+function cleanPastedToken(raw: string): string {
+  return raw.trim().replace(/^["']+|["']+$/g, '').trim();
+}
 
 const ERP_ROLES: { id: ErpUserRole; label: string; idLabel: string; idPlaceholder: string }[] = [
   { id: 'student', label: 'Student', idLabel: 'Register Number', idPlaceholder: 'e.g. 42110482' },
-  { id: 'staff', label: 'Staff', idLabel: 'Staff Number', idPlaceholder: 'e.g. STF1042' },
-  { id: 'new-admission', label: 'New Admission', idLabel: 'Admission / Reg. No.', idPlaceholder: 'e.g. ADM2026041' },
+  { id: 'staff', label: 'Staff', idLabel: 'Official Email or Staff ID', idPlaceholder: 'e.g. faculty@sathyabama.ac.in' },
+  { id: 'new-admission', label: 'New Admission', idLabel: 'Application Number', idPlaceholder: 'e.g. ADM2026041' },
   { id: 'parent', label: 'Parent', idLabel: 'Student Reg. / Parent ID', idPlaceholder: 'e.g. 42110482' },
 ];
 
@@ -103,6 +115,8 @@ export function PortalSyncView({
   const [erpUsername, setErpUsername] = useState('');
   const [erpPassword, setErpPassword] = useState('');
   const [erpToken, setErpToken] = useState('');
+  const [showOptionalErpToken, setShowOptionalErpToken] = useState(false);
+  const [clipboardNotice, setClipboardNotice] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [connectMessage, setConnectMessage] = useState<string | null>(null);
   const [connectWarning, setConnectWarning] = useState<string | null>(null);
@@ -110,6 +124,7 @@ export function PortalSyncView({
   const [connectErrorCode, setConnectErrorCode] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [nowTick, setNowTick] = useState(() => Date.now());
+  const erpTokenInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (autoSyncMinutes === 0 || !nextAutoSyncAt) return;
@@ -130,9 +145,9 @@ export function PortalSyncView({
     setFieldErrors({});
 
     const trimmedReg = registerNumber.trim();
-    const trimmedErpToken = erpToken.trim();
+    const trimmedErpToken = cleanPastedToken(erpToken);
     const trimmedErpUser = erpUsername.trim();
-    const trimmedLmsToken = lmsToken.trim();
+    const trimmedLmsToken = cleanPastedToken(lmsToken);
     const trimmedLmsUser = lmsUsername.trim();
     const wantsMoodleCreds = moodleMethod === 'credentials' && Boolean(lmsPassword || trimmedLmsUser);
     const wantsMoodleToken = moodleMethod === 'token' && Boolean(trimmedLmsToken);
@@ -140,8 +155,11 @@ export function PortalSyncView({
     const wantsErpCreds = !wantsErpToken && Boolean(erpPassword || trimmedErpUser);
 
     const nextErrors: Record<string, string> = {};
-    if (!PORTAL_ID_REGEX.test(trimmedReg)) {
-      nextErrors.registerNumber = `Enter a valid ${roleMeta.idLabel} (4–20 letters or digits).`;
+    if (!isValidPortalId(trimmedReg, erpRole)) {
+      nextErrors.registerNumber =
+        erpRole === 'staff'
+          ? 'Enter a valid official email (e.g. faculty@sathyabama.ac.in) or staff ID.'
+          : `Enter a valid ${roleMeta.idLabel} (4–20 letters or digits).`;
     }
     if (!wantsMoodleCreds && !wantsMoodleToken && !wantsErpCreds && !wantsErpToken) {
       setConnectError('Enter your College ERP password/token or Moodle LMS credentials to connect.');
@@ -197,9 +215,33 @@ export function PortalSyncView({
       const eObj = err as Error & { code?: string; fieldErrors?: Record<string, string> };
       setConnectError(eObj.message || 'Unable to connect portal credentials.');
       setConnectErrorCode(eObj.code ?? null);
+      if (eObj.code === 'erp_browser_login_required') {
+        setShowOptionalErpToken(true);
+      }
       if (eObj.fieldErrors) setFieldErrors(eObj.fieldErrors);
     } finally {
       setConnecting(false);
+    }
+  }
+
+  async function pasteErpTokenFromClipboard() {
+    setClipboardNotice(null);
+    if (!navigator.clipboard?.readText) {
+      setClipboardNotice('Clipboard read is unavailable — press Ctrl+V / Cmd+V in the box.');
+      erpTokenInputRef.current?.focus();
+      return;
+    }
+    try {
+      const text = cleanPastedToken(await navigator.clipboard.readText());
+      if (!text || text.length < 8) {
+        setClipboardNotice('Clipboard did not contain an ERP Access-Token.');
+        return;
+      }
+      setErpToken(text);
+      setClipboardNotice('Access-Token pasted — click Login Through ERP & Sync All.');
+    } catch {
+      setClipboardNotice('Allow clipboard access or press Ctrl+V / Cmd+V in the box.');
+      erpTokenInputRef.current?.focus();
     }
   }
 
@@ -593,12 +635,18 @@ export function PortalSyncView({
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-            {/* 1. College ERP Inputs (Password + Optional Token) */}
+            {/* 1. College ERP Inputs (Automatic Password Login + Collapsible Optional Token) */}
             <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-4 space-y-3.5">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  1. College ERP ({roleMeta.label})
-                </p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    1. College ERP ({roleMeta.label})
+                  </p>
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+                    <CheckCircle2 className="h-3 w-3 shrink-0" aria-hidden="true" />
+                    Automatic login enabled — no manual token needed
+                  </span>
+                </div>
                 <a
                   href={ERP_URL}
                   target="_blank"
@@ -642,7 +690,7 @@ export function PortalSyncView({
                     type="password"
                     value={erpPassword}
                     onChange={(e) => setErpPassword(e.target.value)}
-                    placeholder="Exchanged via erp.sathyabama.ac.in"
+                    placeholder="Auto-exchanged via erp.sathyabama.ac.in"
                     className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                   />
                   {fieldErrors.erpPassword ? (
@@ -651,23 +699,49 @@ export function PortalSyncView({
                 </div>
               </div>
 
-              <div className="pt-2 border-t border-slate-200/80 dark:border-slate-800/80 space-y-1.5">
-                <label
-                  htmlFor="syncErpToken"
-                  className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+              <div className="pt-2 border-t border-slate-200/80 dark:border-slate-800/80 space-y-2">
+                <button
+                  type="button"
+                  onClick={() => setShowOptionalErpToken((v) => !v)}
+                  aria-expanded={showOptionalErpToken}
+                  className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-600 dark:text-slate-400 hover:text-blue-700 dark:hover:text-blue-400 transition-colors cursor-pointer"
                 >
-                  ERP Access-Token (optional)
-                </label>
-                <input
-                  id="syncErpToken"
-                  type="password"
-                  value={erpToken}
-                  onChange={(e) => setErpToken(e.target.value)}
-                  placeholder="Optional: paste Access-Token or session cookie"
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
-                />
-                {fieldErrors.erpToken ? (
-                  <p className="text-xs text-red-700 dark:text-red-400">{fieldErrors.erpToken}</p>
+                  <ChevronDown
+                    className={`h-3.5 w-3.5 transition-transform ${showOptionalErpToken ? 'rotate-180' : ''}`}
+                    aria-hidden="true"
+                  />
+                  Or paste ERP Access-Token manually (optional OTP fallback)
+                </button>
+
+                {showOptionalErpToken ? (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <input
+                        ref={erpTokenInputRef}
+                        id="syncErpToken"
+                        type="password"
+                        value={erpToken}
+                        onChange={(e) => setErpToken(e.target.value)}
+                        placeholder="Optional: paste Access-Token or session cookie"
+                        aria-label="ERP Access-Token (optional)"
+                        className="flex-1 min-w-0 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void pasteErpTokenFromClipboard()}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                      >
+                        <ClipboardPaste className="h-3.5 w-3.5" aria-hidden="true" />
+                        Paste
+                      </button>
+                    </div>
+                    {clipboardNotice ? (
+                      <p className="text-[11px] text-slate-600 dark:text-slate-400">{clipboardNotice}</p>
+                    ) : null}
+                    {fieldErrors.erpToken ? (
+                      <p className="text-xs text-red-700 dark:text-red-400">{fieldErrors.erpToken}</p>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
             </div>

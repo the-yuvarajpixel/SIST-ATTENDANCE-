@@ -137,6 +137,7 @@ export interface ResultsPayload {
   currentCourses: PlannedCourse[];
   caeMarks?: SubjectCaeMark[];
   caeHistory?: CaeTermTrendPoint[];
+  caeMarksUploaded?: boolean;
 }
 
 export type DeadlineKind = 'assignment' | 'exam' | 'fee';

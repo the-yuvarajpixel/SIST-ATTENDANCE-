@@ -29,6 +29,7 @@ import type {
   SectionEnvelope,
   SessionUser,
   StudentProfile,
+  SubjectCaeMark,
   TimetableSlot,
 } from './core/types';
 import { api } from './lib/api';
@@ -209,6 +210,19 @@ export default function App() {
       case 'notifications':
         return run(api.getNotifications, setNotifications);
     }
+  }, []);
+
+  const handleUploadCaeMarks = useCallback(
+    async (marks: SubjectCaeMark[], mode: 'replace' | 'merge') => {
+      const envelope = await api.uploadCaeMarks(marks, mode);
+      setResults({ envelope, loading: false, error: null });
+    },
+    []
+  );
+
+  const handleResetCaeMarks = useCallback(async () => {
+    const envelope = await api.resetCaeMarks();
+    setResults({ envelope, loading: false, error: null });
   }, []);
 
   const loadAllSections = useCallback(
@@ -615,6 +629,8 @@ export default function App() {
                 section={results}
                 onNavigate={setActiveSection}
                 onRetry={() => void loadSection('results', true)}
+                onUploadCaeMarks={handleUploadCaeMarks}
+                onResetCaeMarks={handleResetCaeMarks}
               />
             ) : null}
 
