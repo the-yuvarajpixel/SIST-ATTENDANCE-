@@ -25,6 +25,7 @@ import {
 } from 'recharts';
 import {
   analyzeAttendanceInsights,
+  buildDailyAttendanceLog,
   buildWeeklyAttendanceTrend,
   computeAttendanceStats,
   computeOverallAttendance,
@@ -303,6 +304,17 @@ export function OverviewView({
   const feeDues = deadlineList.filter((d) => d.kind === 'fee' && !completedDeadlineIds.has(d.id));
   const lmsDeadlinesCount = openDeadlines.filter((d) => d.origin === 'LMS' || d.origin === 'ERP + LMS').length;
 
+  const selectedDayAttendance = useMemo(() => {
+    if (attendanceList.length === 0) return null;
+    const log = buildDailyAttendanceLog(attendanceList, timetableList, {
+      endDate: activeAttendanceEndDate,
+      targetPercent: attendanceTarget,
+      subjectCode: 'all',
+      now,
+    });
+    return log.days.find((d) => d.dateKey === activeAttendanceEndDate) ?? null;
+  }, [attendanceList, timetableList, activeAttendanceEndDate, attendanceTarget, now]);
+
   function scrollToCgpaCalculator() {
     const el = document.getElementById('overview-cgpa-calculator');
     if (el) {
@@ -565,7 +577,9 @@ export function OverviewView({
             )}
           </p>
           <p className="mt-1 font-mono text-[11px] tabular-nums text-slate-500 dark:text-slate-400 truncate">
-            EOD till {formatShortDate(activeAttendanceEndDate)}
+            {selectedDayAttendance
+              ? `${selectedDayAttendance.shortDate}: ${selectedDayAttendance.presentCount}/${selectedDayAttendance.totalCount} day classes`
+              : `EOD till ${formatShortDate(activeAttendanceEndDate)} · 0/0 day`}
           </p>
         </button>
 
@@ -818,9 +832,18 @@ export function OverviewView({
       >
         <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
           <div className="min-w-0">
-            <h3 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
-              Weekly Attendance Trend
-            </h3>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <h3 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
+                Weekly Attendance Trend
+              </h3>
+              <button
+                type="button"
+                onClick={() => onNavigate('attendance-trends')}
+                className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline cursor-pointer whitespace-nowrap"
+              >
+                Open 30-Day Daily Trends →
+              </button>
+            </div>
             <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-x-2 gap-y-1">
               {attendance.loading && !attendance.envelope ? (
                 <span>Loading weekly attendance fluctuations...</span>

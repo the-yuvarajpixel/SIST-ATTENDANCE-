@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppFooter } from './components/AppFooter';
+import { AttendanceTrendsView } from './components/AttendanceTrendsView';
 import { AttendanceView } from './components/AttendanceView';
 import { CommandPalette } from './components/CommandPalette';
 import { DeadlinesView } from './components/DeadlinesView';
@@ -20,6 +21,13 @@ import {
   getTodayLocalDateKey,
   normalizeAttendanceEndDate,
 } from './core/attendance';
+import {
+  clearStoredAttendanceSnapshots,
+  readStoredAttendanceSnapshots,
+  seedAndMerge30DaySnapshots,
+  writeStoredAttendanceSnapshots,
+  type DailyAttendanceSnapshot,
+} from './core/attendanceSnapshots';
 import type {
   AttendanceSubject,
   DeadlineItem,
@@ -138,6 +146,7 @@ export default function App() {
 
   const [profile, setProfile] = useState<SectionState<StudentProfile>>(emptySection);
   const [attendance, setAttendance] = useState<SectionState<AttendanceSubject[]>>(emptySection);
+  const [attendanceSnapshots, setAttendanceSnapshots] = useState<DailyAttendanceSnapshot[]>([]);
   const [timetable, setTimetable] = useState<SectionState<TimetableSlot[]>>(emptySection);
   const [results, setResults] = useState<SectionState<ResultsPayload>>(emptySection);
   const [deadlines, setDeadlines] = useState<SectionState<DeadlineItem[]>>(emptySection);
@@ -418,6 +427,72 @@ export default function App() {
     [loadSection]
   );
 
+  // Sync 30-day historical daily attendance snapshots into browser localStorage whenever attendance loads
+  useEffect(() => {
+    if (!user) {
+      setAttendanceSnapshots([]);
+      return;
+    }
+    const existing = readStoredAttendanceSnapshots(user.registerNumber);
+    const subjList = attendance.envelope?.data ?? [];
+    if (subjList.length === 0) {
+      setAttendanceSnapshots(existing);
+      return;
+    }
+    const merged = seedAndMerge30DaySnapshots(
+      existing,
+      subjList,
+      timetable.envelope?.data ?? [],
+      attendanceEndDate,
+      attendanceTarget
+    );
+    const saved = writeStoredAttendanceSnapshots(user.registerNumber, merged);
+    setAttendanceSnapshots(saved);
+  }, [user, attendance.envelope, timetable.envelope, attendanceEndDate, attendanceTarget]);
+
+  const handleCaptureAttendanceSnapshot = useCallback(() => {
+    if (!user) return;
+    const subjList = attendance.envelope?.data ?? [];
+    if (subjList.length === 0) return;
+    const existing = readStoredAttendanceSnapshots(user.registerNumber);
+    const merged = seedAndMerge30DaySnapshots(
+      existing,
+      subjList,
+      timetable.envelope?.data ?? [],
+      attendanceEndDate,
+      attendanceTarget
+    );
+    const saved = writeStoredAttendanceSnapshots(user.registerNumber, merged);
+    setAttendanceSnapshots(saved);
+  }, [user, attendance.envelope, timetable.envelope, attendanceEndDate, attendanceTarget]);
+
+  const handleResetAttendanceSnapshots = useCallback(() => {
+    if (!user) return;
+    clearStoredAttendanceSnapshots(user.registerNumber);
+    const subjList = attendance.envelope?.data ?? [];
+    if (subjList.length === 0) {
+      setAttendanceSnapshots([]);
+      return;
+    }
+    const rebuilt = seedAndMerge30DaySnapshots(
+      [],
+      subjList,
+      timetable.envelope?.data ?? [],
+      attendanceEndDate,
+      attendanceTarget
+    );
+    const saved = writeStoredAttendanceSnapshots(user.registerNumber, rebuilt);
+    setAttendanceSnapshots(saved);
+  }, [user, attendance.envelope, timetable.envelope, attendanceEndDate, attendanceTarget]);
+
+  const handleInspectAttendanceDate = useCallback(
+    (dateKey: string) => {
+      handleChangeAttendanceEndDate(dateKey);
+      setActiveSection('attendance');
+    },
+    [handleChangeAttendanceEndDate]
+  );
+
   // Automatically advance the attendance end date day-by-day at midnight
   // AND trigger an End-of-Day (17:30 local) attendance update once per day so
   // both subject attendance and overall attendance stay current at the end of every day.
@@ -687,6 +762,22 @@ export default function App() {
                   endDate={attendanceEndDate}
                   onChangeEndDate={handleChangeAttendanceEndDate}
                   onChangeTarget={setAttendanceTarget}
+                  onNavigate={setActiveSection}
+                  onRetry={() => void loadSection('attendance', true)}
+                />
+              ) : null}
+
+              {activeSection === 'attendance-trends' ? (
+                <AttendanceTrendsView
+                  section={attendance}
+                  snapshots={attendanceSnapshots}
+                  targetPercent={attendanceTarget}
+                  endDate={attendanceEndDate}
+                  onChangeTarget={setAttendanceTarget}
+                  onCaptureSnapshot={handleCaptureAttendanceSnapshot}
+                  onResetSnapshots={handleResetAttendanceSnapshots}
+                  onInspectDate={handleInspectAttendanceDate}
+                  onNavigate={setActiveSection}
                   onRetry={() => void loadSection('attendance', true)}
                 />
               ) : null}

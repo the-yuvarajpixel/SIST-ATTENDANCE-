@@ -4,6 +4,7 @@ import type { NavSection } from '../core/types';
 const SECTION_TITLES: Record<NavSection, string> = {
   overview: 'Overview',
   attendance: 'Attendance',
+  'attendance-trends': '30-Day Daily Attendance Trends',
   timetable: 'Timetable',
   marks: 'Marks (CAE)',
   results: 'CGPA Planner & Results',

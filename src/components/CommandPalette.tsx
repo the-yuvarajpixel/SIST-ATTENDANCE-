@@ -59,7 +59,8 @@ export function CommandPalette({
           }, 80);
         },
       },
-      { id: 'nav-attendance', group: 'Navigate', label: 'Attendance & Bunk Calculator', detail: 'Check skippable classes and thresholds', run: () => onNavigate('attendance') },
+      { id: 'nav-attendance', group: 'Navigate', label: 'Attendance & Bunk Calculator', detail: 'Check skippable classes and day-by-day updates', run: () => onNavigate('attendance') },
+      { id: 'nav-attendance-trends', group: 'Navigate', label: '30-Day Daily Attendance Trends', detail: 'Line chart of daily attendance snapshots over the last 30 days', run: () => onNavigate('attendance-trends') },
       { id: 'nav-timetable', group: 'Navigate', label: 'Weekly Timetable', detail: 'Class schedule with attendance overlay', run: () => onNavigate('timetable') },
       { id: 'nav-marks', group: 'Navigate', label: 'Marks (CAE)', detail: 'Continuous assessment marks for the current term, subject by subject', run: () => onNavigate('marks') },
       { id: 'nav-results', group: 'Navigate', label: 'CGPA Planner & Results', detail: 'Target CGPA calculator, grade planner, and semester history', run: () => onNavigate('results') },

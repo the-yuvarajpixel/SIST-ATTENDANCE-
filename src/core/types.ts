@@ -4,6 +4,7 @@ export type ErpUserRole = 'student' | 'staff' | 'new-admission' | 'parent';
 export type NavSection =
   | 'overview'
   | 'attendance'
+  | 'attendance-trends'
   | 'timetable'
   | 'marks'
   | 'results'

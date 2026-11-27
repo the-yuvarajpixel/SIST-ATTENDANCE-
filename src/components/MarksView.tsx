@@ -4,6 +4,7 @@ import {
   ArrowRight,
   CheckCircle2,
   CloudDownload,
+  CloudUpload,
   RefreshCw,
   RotateCcw,
   TrendingDown,
@@ -345,6 +346,7 @@ export function MarksView({
   const [uploadPanelKey, setUploadPanelKey] = useState(0);
   const [uploadInitialTab, setUploadInitialTab] = useState<'erp-direct' | 'file' | 'paste' | 'manual'>('erp-direct');
   const [pullingDirectErp, setPullingDirectErp] = useState(false);
+  const [pushingDirectErp, setPushingDirectErp] = useState(false);
   const [directErpNotice, setDirectErpNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const [resettingUploaded, setResettingUploaded] = useState(false);
   const uploadPanelRef = useRef<HTMLDivElement | null>(null);
@@ -382,6 +384,40 @@ export function MarksView({
       setUploadOpen(true);
     } finally {
       setPullingDirectErp(false);
+    }
+  }
+
+  async function handleUploadActiveMarksDirectToErp() {
+    setDirectErpNotice(null);
+    const activeList = section.envelope?.data?.caeMarks ?? [];
+    if (!isLiveErpConnected || activeList.length === 0) {
+      setUploadInitialTab('erp-direct');
+      setUploadPanelKey((k) => k + 1);
+      setUploadOpen(true);
+      window.setTimeout(() => {
+        uploadPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 60);
+      return;
+    }
+
+    setPushingDirectErp(true);
+    try {
+      const res = await onUploadCaeMarks(activeList, 'merge', { syncToErp: true });
+      const msg =
+        res.erpSync?.message ??
+        `Uploaded ${activeList.length} active CAE subject ${activeList.length === 1 ? 'record' : 'records'} directly to erp.sathyabama.ac.in.`;
+      setDirectErpNotice({ kind: res.erpSync?.synced === false ? 'error' : 'success', message: msg });
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Could not upload active CAE marks directly to Sathyabama ERP.';
+      setDirectErpNotice({ kind: 'error', message });
+      setUploadInitialTab('erp-direct');
+      setUploadPanelKey((k) => k + 1);
+      setUploadOpen(true);
+    } finally {
+      setPushingDirectErp(false);
     }
   }
 
@@ -541,7 +577,7 @@ export function MarksView({
             <button
               type="button"
               onClick={() => void handleDirectErpCaeUpdate()}
-              disabled={pullingDirectErp}
+              disabled={pullingDirectErp || pushingDirectErp}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3.5 py-2 text-xs font-medium text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
             >
               {pullingDirectErp ? (
@@ -553,6 +589,24 @@ export function MarksView({
                 {pullingDirectErp
                   ? 'Updating CAE from ERP...'
                   : 'Update CAE Result from ERP'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void handleUploadActiveMarksDirectToErp()}
+              disabled={pullingDirectErp || pushingDirectErp}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-600 dark:border-blue-500 bg-blue-50/70 dark:bg-blue-950/40 px-3.5 py-2 text-xs font-medium text-blue-800 dark:text-blue-200 hover:bg-blue-100/80 dark:hover:bg-blue-950/70 transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              {pushingDirectErp ? (
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <CloudUpload className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              <span>
+                {pushingDirectErp
+                  ? 'Uploading to ERP...'
+                  : `Upload Active Marks to ERP${marks.length > 0 ? ` (${marks.length})` : ''}`}
               </span>
             </button>
 
@@ -573,7 +627,7 @@ export function MarksView({
               }`}
             >
               <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>{uploadOpen ? 'Close Upload' : 'Upload CSV / Manual'}</span>
+              <span>{uploadOpen ? 'Close Panel' : 'CSV / Manual'}</span>
             </button>
 
             <button

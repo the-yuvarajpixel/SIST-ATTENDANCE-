@@ -322,27 +322,27 @@ export function CaeUploadPanel({
     }
 
     const hasInlineAuth = Boolean(erpToken.trim() || erpPassword);
-    if (!isLiveErpConnected && !hasInlineAuth) {
-      setSubmitError(
-        'Enter your Sathyabama ERP password or Access-Token above to submit marks directly to erp.sathyabama.ac.in.'
-      );
-      return;
-    }
 
     setPushingErp(true);
     try {
       const response = await onUpload(existingMarks, uploadMode, {
         syncToErp: true,
-        erpAuth: buildOptionalErpAuth(),
+        erpAuth: isLiveErpConnected || hasInlineAuth ? buildOptionalErpAuth() : undefined,
       });
       setErpPassword('');
       if (response.erpSync?.synced) {
         setShowReauthForm(false);
         setSubmitSuccess(response.erpSync.message);
       } else if (response.erpSync) {
-        setSubmitWarning(response.erpSync.message);
+        if (!isLiveErpConnected && !hasInlineAuth) {
+          setSubmitSuccess(
+            `Uploaded ${existingMarks.length} active CAE ${existingMarks.length === 1 ? 'record' : 'records'} into the portal. Enter your Sathyabama ERP password or Access-Token above whenever you want to push directly to erp.sathyabama.ac.in.`
+          );
+        } else {
+          setSubmitWarning(response.erpSync.message);
+        }
       } else {
-        setSubmitSuccess('CAE marks updated.');
+        setSubmitSuccess(`Uploaded ${existingMarks.length} active CAE records.`);
       }
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Unable to upload CAE marks directly to College ERP.');
@@ -729,7 +729,7 @@ export function CaeUploadPanel({
                   type="button"
                   disabled={busy || existingMarks.length === 0}
                   onClick={() => void handlePushCurrentToErp()}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3.5 py-2 text-xs font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 dark:bg-slate-100 dark:hover:bg-white px-3.5 py-2 text-xs font-medium text-white dark:text-slate-900 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
                 >
                   <CloudUpload className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>

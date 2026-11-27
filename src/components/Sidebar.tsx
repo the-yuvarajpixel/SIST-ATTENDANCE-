@@ -7,6 +7,7 @@ import {
   ClipboardList,
   GraduationCap,
   LayoutDashboard,
+  LineChart,
   LogOut,
   RefreshCw,
   TrendingUp,
@@ -38,6 +39,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'overview', label: 'Overview', icon: LayoutDashboard },
       { id: 'attendance', label: 'Attendance', icon: CheckSquare },
+      { id: 'attendance-trends', label: '30-Day Trends', icon: LineChart },
       { id: 'timetable', label: 'Timetable', icon: CalendarClock },
       { id: 'marks', label: 'Marks (CAE)', icon: ClipboardList },
       { id: 'results', label: 'CGPA Planner', icon: TrendingUp },

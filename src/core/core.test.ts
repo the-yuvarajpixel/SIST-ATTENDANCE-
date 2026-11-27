@@ -14,6 +14,12 @@ import {
   simulateAttendance,
 } from './attendance';
 import {
+  compute30DayTrendSummary,
+  sanitizeSnapshotStore,
+  seedAndMerge30DaySnapshots,
+  selectLast30DaySnapshots,
+} from './attendanceSnapshots';
+import {
   buildCgpaTrajectory,
   buildGradeDistribution,
   computeCgpaSummary,
@@ -826,6 +832,68 @@ test('computeAttendanceAsOfDate updates subject and overall attendance day-by-da
   // Shifting forward past today clamps strictly to today
   assert.equal(shiftAttendanceDateKey('2026-11-28', 5, satNow), '2026-11-28');
 });
+
+test('attendanceSnapshots seeds 30-day daily history, preserves live snapshots, and computes trend metrics', () => {
+  const subjects: AttendanceSubject[] = [
+    { courseCode: 'SCSA1601', courseName: 'Computer Networks', faculty: 'Dr. A', credits: 4, attended: 20, total: 24, lastUpdated: '2026-11-27' },
+    { courseCode: 'SCSA1602', courseName: 'Operating Systems', faculty: 'Dr. B', credits: 4, attended: 16, total: 22, lastUpdated: '2026-11-27' },
+  ];
+  const slots: TimetableSlot[] = [
+    { id: '1', day: 'Mon', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1601', courseName: 'Computer Networks', room: 'CS-1', faculty: 'Dr. A', kind: 'Lecture' },
+    { id: '2', day: 'Wed', startTime: '10:00', endTime: '10:50', courseCode: 'SCSA1601', courseName: 'Computer Networks', room: 'CS-1', faculty: 'Dr. A', kind: 'Lecture' },
+    { id: '3', day: 'Fri', startTime: '11:10', endTime: '12:00', courseCode: 'SCSA1601', courseName: 'Computer Networks', room: 'CS-1', faculty: 'Dr. A', kind: 'Lecture' },
+    { id: '4', day: 'Tue', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1602', courseName: 'Operating Systems', room: 'CS-2', faculty: 'Dr. B', kind: 'Lecture' },
+    { id: '5', day: 'Thu', startTime: '10:00', endTime: '10:50', courseCode: 'SCSA1602', courseName: 'Operating Systems', room: 'CS-2', faculty: 'Dr. B', kind: 'Lecture' },
+    { id: '6', day: 'Fri', startTime: '13:00', endTime: '13:50', courseCode: 'SCSA1602', courseName: 'Operating Systems', room: 'CS-2', faculty: 'Dr. B', kind: 'Lecture' },
+  ];
+
+  const now = new Date(2026, 10, 27, 15, 0, 0);
+  // Existing live snapshot from 3 days earlier must be preserved across merges
+  const priorLive = sanitizeSnapshotStore([
+    {
+      dateKey: '2026-11-24',
+      shortDate: '24 Nov',
+      dayName: 'Tue',
+      capturedAt: '2026-11-24T17:30:00.000Z',
+      source: 'live-snapshot',
+      dayPresent: 1,
+      dayTotal: 1,
+      dayPercentage: 100,
+      overallPercentage: 80.5,
+      subjects: [
+        { courseCode: 'SCSA1602', courseName: 'Operating Systems', dayPresent: 1, dayTotal: 1, dayPercentage: 100, cumulativePercentage: 75 },
+      ],
+    },
+    { dateKey: 'bad-date', dayTotal: 999 }, // must be rejected
+  ]);
+  assert.equal(priorLive.length, 1);
+
+  const merged = seedAndMerge30DaySnapshots(priorLive, subjects, slots, '2026-11-27', 75, now);
+  const window30 = selectLast30DaySnapshots(merged, '2026-11-27', now);
+
+  assert.ok(window30.length >= 10);
+  assert.ok(window30.every((s) => s.dateKey >= '2026-10-29' && s.dateKey <= '2026-11-27'));
+  // Preserved prior live snapshot
+  const preserved = window30.find((s) => s.dateKey === '2026-11-24');
+  assert.ok(preserved);
+  assert.equal(preserved.source, 'live-snapshot');
+  assert.equal(preserved.overallPercentage, 80.5);
+
+  // Active end date is always marked live-snapshot and has day-only class count (<= 2 classes on Friday)
+  const latest = window30[window30.length - 1];
+  assert.equal(latest.dateKey, '2026-11-27');
+  assert.equal(latest.source, 'live-snapshot');
+  assert.ok(latest.dayTotal <= 2);
+
+  const overallSummary = compute30DayTrendSummary(window30, 75, 'all');
+  assert.equal(overallSummary.totalStoredCount, window30.length);
+  assert.ok(overallSummary.liveSnapshotCount >= 2);
+  assert.ok(overallSummary.bestDay !== null);
+
+  const singleSubjectSummary = compute30DayTrendSummary(window30, 75, 'SCSA1601');
+  assert.equal(singleSubjectSummary.points.length, window30.length);
+});
+
 
 
 
