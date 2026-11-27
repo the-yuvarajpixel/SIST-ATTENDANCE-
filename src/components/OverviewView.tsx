@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, ArrowUpRight, Calculator, CalendarClock, Link2, RefreshCw, TrendingDown, TrendingUp } from 'lucide-react';
+import {
+  ArrowRight,
+  ArrowUpRight,
+  Calculator,
+  CalendarClock,
+  ChevronLeft,
+  ChevronRight,
+  CloudDownload,
+  Link2,
+  RefreshCw,
+  TrendingDown,
+  TrendingUp,
+} from 'lucide-react';
 import {
   Area,
   CartesianGrid,
@@ -16,6 +28,8 @@ import {
   buildWeeklyAttendanceTrend,
   computeAttendanceStats,
   computeOverallAttendance,
+  getTodayLocalDateKey,
+  shiftAttendanceDateKey,
   type WeeklyAttendancePoint,
 } from '../core/attendance';
 import { computeCgpaSummary } from '../core/gpa';
@@ -53,6 +67,8 @@ interface OverviewViewProps {
   completedDeadlineIds: Set<string>;
   readNotificationIds: Set<string>;
   attendanceTarget: number;
+  attendanceEndDate?: string;
+  onChangeAttendanceEndDate?: (nextDate: string) => void;
   syncingPortals?: boolean;
   lastSyncReport?: PortalSyncReport | null;
   onSyncPortals?: () => void;
@@ -182,6 +198,8 @@ export function OverviewView({
   completedDeadlineIds,
   readNotificationIds,
   attendanceTarget,
+  attendanceEndDate,
+  onChangeAttendanceEndDate,
   syncingPortals = false,
   lastSyncReport = null,
   onSyncPortals,
@@ -279,6 +297,11 @@ export function OverviewView({
   const firstName = studentProfile?.name?.trim().split(/\s+/)[0] ?? null;
   const hour = now.getHours();
   const timeGreeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const todayDateKey = getTodayLocalDateKey();
+  const activeAttendanceEndDate = attendanceEndDate || todayDateKey;
+  const isAttendanceAtToday = activeAttendanceEndDate >= todayDateKey;
+  const feeDues = deadlineList.filter((d) => d.kind === 'fee' && !completedDeadlineIds.has(d.id));
+  const lmsDeadlinesCount = openDeadlines.filter((d) => d.origin === 'LMS' || d.origin === 'ERP + LMS').length;
 
   function scrollToCgpaCalculator() {
     const el = document.getElementById('overview-cgpa-calculator');
@@ -328,18 +351,19 @@ export function OverviewView({
         <div className="flex flex-wrap items-center gap-2 shrink-0">
           <button
             type="button"
+            onClick={() => onNavigate('marks')}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3 py-1.5 text-xs font-medium text-white transition-colors whitespace-nowrap cursor-pointer"
+          >
+            <CloudDownload className="h-3.5 w-3.5" aria-hidden="true" />
+            CAE Result from ERP
+          </button>
+          <button
+            type="button"
             onClick={scrollToCgpaCalculator}
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
           >
             <Calculator className="h-3.5 w-3.5 text-blue-700 dark:text-blue-400" aria-hidden="true" />
             CGPA Calculator
-          </button>
-          <button
-            type="button"
-            onClick={() => onNavigate('marks')}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
-          >
-            CAE Marks
           </button>
         </div>
       </div>
@@ -540,6 +564,9 @@ export function OverviewView({
               </span>
             )}
           </p>
+          <p className="mt-1 font-mono text-[11px] tabular-nums text-slate-500 dark:text-slate-400 truncate">
+            EOD till {formatShortDate(activeAttendanceEndDate)}
+          </p>
         </button>
 
         <button
@@ -604,6 +631,176 @@ export function OverviewView({
             ERP circulars &amp; Moodle LMS
           </p>
         </button>
+      </section>
+
+      {/* Complete ERP Academic Profile & Direct ERP + Moodle LMS Feature Hub */}
+      <section
+        aria-label="Complete ERP academic profile and direct portal modules"
+        className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden"
+      >
+        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
+              College ERP &amp; Moodle LMS Direct Hub
+            </h3>
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+              All synced student profile details, end-of-day attendance updates, CAE results, and LMS coursework in one place.
+            </p>
+          </div>
+
+          {onChangeAttendanceEndDate ? (
+            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+              <span className="text-xs font-medium text-slate-500 dark:text-slate-400 mr-1">
+                Attendance EOD:
+              </span>
+              <button
+                type="button"
+                onClick={() => onChangeAttendanceEndDate(shiftAttendanceDateKey(activeAttendanceEndDate, -1))}
+                aria-label="Previous attendance day"
+                className="inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 p-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+              <span className="font-mono text-xs tabular-nums font-medium text-slate-900 dark:text-slate-100 px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 whitespace-nowrap">
+                {formatShortDate(activeAttendanceEndDate)}
+              </span>
+              <button
+                type="button"
+                disabled={isAttendanceAtToday}
+                onClick={() => onChangeAttendanceEndDate(shiftAttendanceDateKey(activeAttendanceEndDate, 1))}
+                aria-label="Next attendance day"
+                className="inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 p-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+              {!isAttendanceAtToday ? (
+                <button
+                  type="button"
+                  onClick={() => onChangeAttendanceEndDate(todayDateKey)}
+                  className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline px-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  Today
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+
+        {/* ERP Student Profile Metadata Grid */}
+        {studentProfile ? (
+          <div className="px-5 py-3.5 bg-slate-50/70 dark:bg-slate-950/50 border-b border-slate-200 dark:border-slate-800 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-x-4 gap-y-2.5 text-xs">
+            <div className="min-w-0">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">Register No</p>
+              <p className="font-mono font-semibold text-slate-900 dark:text-slate-100 tabular-nums truncate">
+                {studentProfile.registerNumber}
+              </p>
+            </div>
+            <div className="min-w-0">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">Department</p>
+              <p className="font-medium text-slate-900 dark:text-slate-100 truncate" title={studentProfile.department}>
+                {studentProfile.department}
+              </p>
+            </div>
+            <div className="min-w-0">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">Batch &amp; Section</p>
+              <p className="font-mono font-medium text-slate-900 dark:text-slate-100 tabular-nums truncate">
+                {studentProfile.batch} · Sec {studentProfile.section}
+              </p>
+            </div>
+            <div className="min-w-0">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">Current Term</p>
+              <p className="font-mono font-medium text-slate-900 dark:text-slate-100 tabular-nums truncate">
+                Semester {studentProfile.semester}
+              </p>
+            </div>
+            <div className="min-w-0">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">Faculty Advisor</p>
+              <p className="font-medium text-slate-900 dark:text-slate-100 truncate" title={studentProfile.advisor}>
+                {studentProfile.advisor}
+              </p>
+            </div>
+            <div className="min-w-0">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">College Email</p>
+              <p className="font-mono text-slate-700 dark:text-slate-300 truncate" title={studentProfile.email}>
+                {studentProfile.email}
+              </p>
+            </div>
+          </div>
+        ) : null}
+
+        {/* Direct ERP & LMS Modules Directory */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 divide-y sm:divide-y-0 sm:gap-px bg-slate-200 dark:bg-slate-800">
+          {[
+            {
+              title: 'Subject & Overall Attendance',
+              source: 'ERP · Day-by-Day EOD',
+              metric: `${overallAttendance.overallPercentage.toFixed(1)}% · ${attendanceList.length} subjects`,
+              section: 'attendance' as NavSection,
+            },
+            {
+              title: 'Direct CAE 1 & CAE 2 Results',
+              source: 'ERP · Pull & Deep-Dive',
+              metric: `${resultsData?.caeMarks.length ?? 0} subjects synced`,
+              section: 'marks' as NavSection,
+            },
+            {
+              title: 'Mon–Sat Weekly Timetable',
+              source: 'ERP · Live Schedule',
+              metric: `${timetableList.length} weekly slots`,
+              section: 'timetable' as NavSection,
+            },
+            {
+              title: 'Semester Grades & CGPA',
+              source: 'ERP · Grade Distribution',
+              metric: cgpaSummary ? `CGPA ${cgpaSummary.cgpa.toFixed(2)} · ${cgpaSummary.completedCredits} cr` : 'View transcript',
+              section: 'results' as NavSection,
+            },
+            {
+              title: 'Moodle LMS Deadlines',
+              source: 'LMS · Assignments & Labs',
+              metric: `${lmsDeadlinesCount} active LMS task${lmsDeadlinesCount === 1 ? '' : 's'}`,
+              section: 'deadlines' as NavSection,
+            },
+            {
+              title: 'ERP Exam Dates & Fee Dues',
+              source: 'ERP · Exam & Accounts',
+              metric: `${upcomingErpExams.length} exams${feeDues.length > 0 ? ` · ${feeDues.length} fee due` : ' · No fee due'}`,
+              section: 'deadlines' as NavSection,
+            },
+            {
+              title: 'Circulars & LMS Notices',
+              source: 'ERP + LMS · Unified Feed',
+              metric: `${unreadNotices.length} unread of ${notificationList.length}`,
+              section: 'notifications' as NavSection,
+            },
+            {
+              title: 'Auto-Sync ERP & LMS Hub',
+              source: 'ERP + LMS · Live Connector',
+              metric: user?.mode === 'live' ? 'Live sync active' : 'Connect ERP & LMS',
+              section: 'sync' as NavSection,
+            },
+          ].map((mod) => (
+            <button
+              key={mod.title}
+              type="button"
+              onClick={() => onNavigate(mod.section)}
+              className="group text-left bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800/60 px-4 py-3.5 transition-colors cursor-pointer"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
+                  {mod.title}
+                </p>
+                <ArrowUpRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-blue-700 dark:group-hover:text-blue-400 shrink-0 transition-colors" aria-hidden="true" />
+              </div>
+              <p className="mt-1 text-[11px] font-mono text-slate-500 dark:text-slate-400 truncate">
+                {mod.source}
+              </p>
+              <p className="mt-1 text-xs font-mono tabular-nums font-medium text-slate-700 dark:text-slate-300 truncate">
+                {mod.metric}
+              </p>
+            </button>
+          ))}
+        </div>
       </section>
 
       {/* Interactive Semester-Wise CGPA Calculator Tool */}

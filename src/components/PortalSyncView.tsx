@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   AlertTriangle,
+  ArrowUpRight,
   BookOpen,
   CheckCircle2,
   ChevronDown,
@@ -41,6 +42,7 @@ interface PortalSyncViewProps {
   notifications: SectionState<NotificationItem[]>;
   syncing: boolean;
   lastReport: PortalSyncReport | null;
+  attendanceEndDate?: string;
   autoSyncMinutes: AutoSyncIntervalMinutes;
   nextAutoSyncAt: number | null;
   onChangeAutoSyncMinutes: (minutes: AutoSyncIntervalMinutes) => void;
@@ -99,6 +101,7 @@ export function PortalSyncView({
   notifications,
   syncing,
   lastReport,
+  attendanceEndDate,
   autoSyncMinutes,
   nextAutoSyncAt,
   onChangeAutoSyncMinutes,
@@ -255,42 +258,44 @@ export function PortalSyncView({
   }[] = [
     {
       key: 'profile',
-      label: 'Profile & Account Role',
+      label: 'Profile, Advisor & Account Role',
       portal: erpConnectedLive ? 'College ERP' : user.mode === 'live' ? 'Moodle LMS' : 'College ERP',
       state: profile,
       countLabel: profile.envelope ? '1 profile' : '—',
     },
     {
       key: 'attendance',
-      label: 'Attendance & Bunk Calculator',
+      label: 'Day-by-Day Subject & Overall Attendance',
       portal: 'College ERP',
       state: attendance,
       countLabel: attendance.envelope ? `${attendance.envelope.data.length} subjects` : '—',
     },
     {
       key: 'timetable',
-      label: 'Weekly Timetable',
+      label: 'Mon–Sat Weekly Timetable',
       portal: 'College ERP',
       state: timetable,
       countLabel: timetable.envelope ? `${timetable.envelope.data.length} slots` : '—',
     },
     {
       key: 'results',
-      label: 'Results, CAE Marks & CGPA',
+      label: 'Direct CAE 1/2 Marks, Grades & CGPA',
       portal: 'College ERP',
       state: results,
-      countLabel: results.envelope ? `${results.envelope.data.semesters.length} semesters` : '—',
+      countLabel: results.envelope
+        ? `${results.envelope.data.semesters.length} semesters · ${results.envelope.data.caeMarks.length} CAE`
+        : '—',
     },
     {
       key: 'deadlines',
-      label: 'Deadlines & Assignments',
+      label: 'Deadlines, Exam Dates & Fee Dues',
       portal: user.mode === 'live' && !erpConnectedLive ? 'Moodle LMS' : 'Moodle LMS + College ERP',
       state: deadlines,
-      countLabel: deadlines.envelope ? `${deadlines.envelope.data.length} deadlines` : '—',
+      countLabel: deadlines.envelope ? `${deadlines.envelope.data.length} items` : '—',
     },
     {
       key: 'notifications',
-      label: 'Notifications & Circulars',
+      label: 'ERP Circulars & Moodle LMS Notices',
       portal: user.mode === 'live' && !erpConnectedLive ? 'Moodle LMS' : 'Moodle LMS + College ERP',
       state: notifications,
       countLabel: notifications.envelope ? `${notifications.envelope.data.length} notices` : '—',
@@ -347,7 +352,8 @@ export function PortalSyncView({
                 <span className="font-mono tabular-nums">
                   Every {autoSyncMinutes} min
                   {nextAutoSyncAt ? ` · Next update in ${formatCountdown(nextAutoSyncAt, nowTick)}` : ''}
-                  {' · Also syncs on tab focus'}
+                  {' · EOD Attendance auto-updates daily at 5:30 PM & midnight'}
+                  {attendanceEndDate ? ` (Cutoff: ${attendanceEndDate})` : ''}
                 </span>
               )}
             </div>
@@ -859,24 +865,44 @@ export function PortalSyncView({
 
       {/* Per-Section Live Sync Table */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800">
-          <h3 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
-            Synced Portal Datasets
-          </h3>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Each section syncs independently so Moodle LMS stays live even if College ERP is offline.
-          </p>
+        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <h3 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
+              All College ERP &amp; Moodle LMS Modules
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Every ERP and LMS feature syncs independently so Moodle LMS stays live even if College ERP is offline.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => onNavigate('marks')}
+              className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-xs font-medium text-blue-700 dark:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              Direct CAE Pull
+              <ArrowUpRight className="h-3 w-3" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('attendance')}
+              className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              Day-by-Day Attendance
+              <ArrowUpRight className="h-3 w-3" aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead>
               <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 text-slate-600 dark:text-slate-400">
-                <th className="px-5 py-3 font-medium">Dataset</th>
+                <th className="px-5 py-3 font-medium">Dataset / Feature</th>
                 <th className="px-5 py-3 font-medium">Portal Source</th>
                 <th className="px-5 py-3 font-medium">Records</th>
                 <th className="px-5 py-3 font-medium">Status</th>
-                <th className="px-5 py-3 font-medium text-right">Action</th>
+                <th className="px-5 py-3 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
@@ -884,6 +910,18 @@ export function PortalSyncView({
                 const isError = Boolean(row.state.error && !row.state.envelope);
                 const isStale = Boolean(row.state.envelope?.stale);
                 const isReady = Boolean(row.state.envelope && !row.state.envelope.stale);
+                const openTarget: NavSection =
+                  row.key === 'profile'
+                    ? 'overview'
+                    : row.key === 'attendance'
+                      ? 'attendance'
+                      : row.key === 'timetable'
+                        ? 'timetable'
+                        : row.key === 'results'
+                          ? 'marks'
+                          : row.key === 'deadlines'
+                            ? 'deadlines'
+                            : 'notifications';
 
                 return (
                   <tr key={row.key}>
@@ -919,15 +957,25 @@ export function PortalSyncView({
                       )}
                     </td>
                     <td className="px-5 py-3 text-right">
-                      <button
-                        type="button"
-                        onClick={() => onRetrySection(row.key)}
-                        disabled={row.state.loading}
-                        className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50"
-                      >
-                        <RefreshCw className={`h-3 w-3 ${row.state.loading ? 'animate-spin' : ''}`} aria-hidden="true" />
-                        Sync
-                      </button>
+                      <div className="inline-flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onNavigate(openTarget)}
+                          className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-1 text-xs font-medium text-blue-700 dark:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                        >
+                          Open
+                          <ArrowUpRight className="h-3 w-3" aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onRetrySection(row.key)}
+                          disabled={row.state.loading}
+                          className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50"
+                        >
+                          <RefreshCw className={`h-3 w-3 ${row.state.loading ? 'animate-spin' : ''}`} aria-hidden="true" />
+                          Sync
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );

@@ -418,12 +418,18 @@ export default function App() {
     [loadSection]
   );
 
-  // Automatically advance the attendance end date day-by-day when a new calendar day starts
+  // Automatically advance the attendance end date day-by-day at midnight
+  // AND trigger an End-of-Day (17:30 local) attendance update once per day so
+  // both subject attendance and overall attendance stay current at the end of every day.
   const lastTrackedTodayRef = useRef<string>(getTodayLocalDateKey());
+  const lastEndOfDaySyncDateRef = useRef<string | null>(null);
   useEffect(() => {
     if (!user) return;
-    const checkDayRollover = () => {
+    const checkDayAndEndOfDayRollover = () => {
+      const nowLocal = new Date();
       const currentToday = getTodayLocalDateKey();
+
+      // 1. New calendar day rollover (midnight)
       if (currentToday !== lastTrackedTodayRef.current) {
         const previousToday = lastTrackedTodayRef.current;
         lastTrackedTodayRef.current = currentToday;
@@ -432,13 +438,28 @@ export default function App() {
           setAttendanceEndDate(currentToday);
           void loadSection('attendance', true, currentToday);
         }
+        return;
+      }
+
+      // 2. End-of-Day automatic update once daily after classes conclude (17:30 local)
+      const pastEndOfDay =
+        nowLocal.getHours() > 17 || (nowLocal.getHours() === 17 && nowLocal.getMinutes() >= 30);
+      if (
+        pastEndOfDay &&
+        lastEndOfDaySyncDateRef.current !== currentToday &&
+        attendanceEndDateRef.current === currentToday &&
+        document.visibilityState === 'visible'
+      ) {
+        lastEndOfDaySyncDateRef.current = currentToday;
+        void loadSection('attendance', true, currentToday);
       }
     };
-    const intervalId = window.setInterval(checkDayRollover, 60_000);
-    document.addEventListener('visibilitychange', checkDayRollover);
+    checkDayAndEndOfDayRollover();
+    const intervalId = window.setInterval(checkDayAndEndOfDayRollover, 60_000);
+    document.addEventListener('visibilitychange', checkDayAndEndOfDayRollover);
     return () => {
       window.clearInterval(intervalId);
-      document.removeEventListener('visibilitychange', checkDayRollover);
+      document.removeEventListener('visibilitychange', checkDayAndEndOfDayRollover);
     };
   }, [user, loadSection]);
 
@@ -647,6 +668,8 @@ export default function App() {
                   completedDeadlineIds={completedDeadlineIds}
                   readNotificationIds={readNotificationIds}
                   attendanceTarget={attendanceTarget}
+                  attendanceEndDate={attendanceEndDate}
+                  onChangeAttendanceEndDate={handleChangeAttendanceEndDate}
                   syncingPortals={syncingPortals}
                   lastSyncReport={lastSyncReport}
                   onSyncPortals={() => void handleSyncPortals()}
@@ -730,6 +753,7 @@ export default function App() {
                 notifications={notifications}
                 syncing={syncingPortals}
                 lastReport={lastSyncReport}
+                attendanceEndDate={attendanceEndDate}
                 autoSyncMinutes={autoSyncMinutes}
                 nextAutoSyncAt={nextAutoSyncAt}
                 onChangeAutoSyncMinutes={setAutoSyncMinutes}

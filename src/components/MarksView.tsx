@@ -1,5 +1,15 @@
-import { useMemo, useState } from 'react';
-import { ArrowRight, RotateCcw, TrendingDown, TrendingUp, Upload } from 'lucide-react';
+import { useMemo, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  ArrowRight,
+  CheckCircle2,
+  CloudDownload,
+  RefreshCw,
+  RotateCcw,
+  TrendingDown,
+  TrendingUp,
+  Upload,
+} from 'lucide-react';
 import {
   Area,
   Bar,
@@ -332,7 +342,48 @@ export function MarksView({
   const [deepDiveMode, setDeepDiveMode] = useState<DeepDiveMode>('subject');
   const [deepDiveScale, setDeepDiveScale] = useState<TrendScale>('percent');
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadPanelKey, setUploadPanelKey] = useState(0);
+  const [uploadInitialTab, setUploadInitialTab] = useState<'erp-direct' | 'file' | 'paste' | 'manual'>('erp-direct');
+  const [pullingDirectErp, setPullingDirectErp] = useState(false);
+  const [directErpNotice, setDirectErpNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const [resettingUploaded, setResettingUploaded] = useState(false);
+  const uploadPanelRef = useRef<HTMLDivElement | null>(null);
+
+  const isLiveErpConnected = user.mode === 'live' && user.erpTokenPresent;
+
+  async function handleDirectErpCaeUpdate() {
+    setDirectErpNotice(null);
+    if (!isLiveErpConnected) {
+      setUploadInitialTab('erp-direct');
+      setUploadPanelKey((k) => k + 1);
+      setUploadOpen(true);
+      window.setTimeout(() => {
+        uploadPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 60);
+      return;
+    }
+
+    setPullingDirectErp(true);
+    try {
+      const res = await onPullCaeMarksFromErp('replace');
+      const count = res.data.caeMarks.length;
+      const syncMsg =
+        res.erpSync?.message ??
+        `Updated ${count} ${count === 1 ? 'subject' : 'subjects'} directly from Sathyabama ERP (erp.sathyabama.ac.in).`;
+      setDirectErpNotice({ kind: 'success', message: syncMsg });
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Could not pull CAE marks from Sathyabama ERP. Sign in below to reconnect.';
+      setDirectErpNotice({ kind: 'error', message });
+      setUploadInitialTab('erp-direct');
+      setUploadPanelKey((k) => k + 1);
+      setUploadOpen(true);
+    } finally {
+      setPullingDirectErp(false);
+    }
+  }
 
   const payload = section.envelope?.data ?? null;
   const marks = payload?.caeMarks ?? [];
@@ -489,7 +540,31 @@ export function MarksView({
 
             <button
               type="button"
-              onClick={() => setUploadOpen((prev) => !prev)}
+              onClick={() => void handleDirectErpCaeUpdate()}
+              disabled={pullingDirectErp}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3.5 py-2 text-xs font-medium text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              {pullingDirectErp ? (
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <CloudDownload className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              <span>
+                {pullingDirectErp
+                  ? 'Updating CAE from ERP...'
+                  : 'Update CAE Result from ERP'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (!uploadOpen) {
+                  setUploadInitialTab('file');
+                  setUploadPanelKey((k) => k + 1);
+                }
+                setUploadOpen((prev) => !prev);
+              }}
               aria-expanded={uploadOpen}
               className={`inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 uploadOpen
@@ -498,20 +573,47 @@ export function MarksView({
               }`}
             >
               <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>{uploadOpen ? 'Close Upload' : 'Upload CAE Data'}</span>
+              <span>{uploadOpen ? 'Close Upload' : 'Upload CSV / Manual'}</span>
             </button>
 
             <button
               type="button"
               onClick={() => onNavigate('results')}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3.5 py-2 text-xs font-medium text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <span>Open CGPA Planner</span>
+              <span>CGPA Planner</span>
               <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </div>
         </div>
       </section>
+
+      {directErpNotice ? (
+        <div
+          role={directErpNotice.kind === 'error' ? 'alert' : 'status'}
+          className={`rounded-xl border px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-3 ${
+            directErpNotice.kind === 'error'
+              ? 'border-red-200 dark:border-red-900/60 bg-red-50/80 dark:bg-red-950/30 text-red-900 dark:text-red-200'
+              : 'border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/80 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-200'
+          }`}
+        >
+          <span className="inline-flex items-center gap-2 min-w-0">
+            {directErpNotice.kind === 'error' ? (
+              <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
+            ) : (
+              <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+            )}
+            <span>{directErpNotice.message}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setDirectErpNotice(null)}
+            className="font-medium underline cursor-pointer shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
 
       {hasUploadedData ? (
         <div
@@ -521,15 +623,19 @@ export function MarksView({
           <span>
             {payload?.caeErpSync?.synced
               ? payload.caeErpSync.message
-              : `Showing your uploaded Continuous Assessment (CAE) marks (${marks.length} ${marks.length === 1 ? 'subject' : 'subjects'}). All charts, KPIs, and ESE grade targets reflect your uploaded data.`}
+              : `Showing your updated Continuous Assessment (CAE) marks (${marks.length} ${marks.length === 1 ? 'subject' : 'subjects'}). All charts, KPIs, and ESE grade targets reflect your latest data.`}
           </span>
           <div className="flex items-center gap-3 shrink-0">
             <button
               type="button"
-              onClick={() => setUploadOpen(true)}
+              onClick={() => {
+                setUploadInitialTab('erp-direct');
+                setUploadPanelKey((k) => k + 1);
+                setUploadOpen(true);
+              }}
               className="font-medium underline cursor-pointer whitespace-nowrap"
             >
-              Edit / Upload More
+              Pull / Edit Marks
             </button>
             <button
               type="button"
@@ -552,16 +658,20 @@ export function MarksView({
       ) : null}
 
       {uploadOpen ? (
-        <CaeUploadPanel
-          user={user}
-          currentSemester={payload?.currentSemester}
-          existingMarks={marks}
-          hasUploadedData={hasUploadedData}
-          onUpload={onUploadCaeMarks}
-          onPullFromErp={onPullCaeMarksFromErp}
-          onReset={onResetCaeMarks}
-          onClose={() => setUploadOpen(false)}
-        />
+        <div ref={uploadPanelRef}>
+          <CaeUploadPanel
+            key={uploadPanelKey}
+            user={user}
+            currentSemester={payload?.currentSemester}
+            existingMarks={marks}
+            hasUploadedData={hasUploadedData}
+            initialTab={uploadInitialTab}
+            onUpload={onUploadCaeMarks}
+            onPullFromErp={onPullCaeMarksFromErp}
+            onReset={onResetCaeMarks}
+            onClose={() => setUploadOpen(false)}
+          />
+        </div>
       ) : null}
 
       {section.loading && !payload ? (

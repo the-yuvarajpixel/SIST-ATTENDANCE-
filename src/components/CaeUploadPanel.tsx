@@ -29,6 +29,7 @@ interface CaeUploadPanelProps {
   currentSemester?: number;
   existingMarks: SubjectCaeMark[];
   hasUploadedData: boolean;
+  initialTab?: UploadTab;
   onUpload: (
     marks: SubjectCaeMark[],
     mode: 'replace' | 'merge',
@@ -105,6 +106,7 @@ export function CaeUploadPanel({
   currentSemester,
   existingMarks,
   hasUploadedData,
+  initialTab = 'erp-direct',
   onUpload,
   onPullFromErp,
   onReset,
@@ -112,7 +114,7 @@ export function CaeUploadPanel({
 }: CaeUploadPanelProps) {
   const isLiveErpConnected = user.mode === 'live' && user.erpTokenPresent;
 
-  const [tab, setTab] = useState<UploadTab>('erp-direct');
+  const [tab, setTab] = useState<UploadTab>(initialTab);
   const [uploadMode, setUploadMode] = useState<UploadMode>('merge');
   const [syncToErp, setSyncToErp] = useState<boolean>(isLiveErpConnected);
 
