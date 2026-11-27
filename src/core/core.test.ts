@@ -30,6 +30,14 @@ import {
   shiftAttendanceDateKey,
   simulateAttendance,
 } from './attendance';
+import {
+  SATHYABAMA_MARKS_SEMESTERS,
+  computeEngineCumulativeCgpa,
+  computeEngineSemesterStats,
+  computeInternalOutOf50,
+  getGradeStatusTone,
+  getInternalStatusTone,
+} from './marksEngine';
 import { decryptJsonWithKey, encryptJsonWithKey } from '../lib/deviceCrypto';
 import {
   compute30DayTrendSummary,
@@ -1104,5 +1112,50 @@ test('deviceCrypto AES-GCM encrypts/decrypts credentials safely, uses unique IVs
   };
   await assert.rejects(() => decryptJsonWithKey(key, tampered));
 });
+
+test('marksEngine computes /50 internals, 10-point SGPA/CGPA, RA arrears, and live What-If grade overrides', () => {
+  // (42/50)*20 + (45/50)*20 + 9 = 16.8 + 18 + 9 = 43.8
+  assert.equal(computeInternalOutOf50(42, 45, 9), 43.8);
+  assert.equal(computeInternalOutOf50(50, 50, 10), 50);
+  assert.equal(computeInternalOutOf50(0, 0, 0), 0);
+
+  // Semester 5 includes required Sathyabama codes
+  const sem5 = SATHYABAMA_MARKS_SEMESTERS[0];
+  assert.equal(sem5.label, 'Semester 5');
+  assert.deepEqual(
+    sem5.courses.map((c) => c.courseCode),
+    ['SCS1304', 'SCS1305', 'SCS1306', 'SMA1302', 'SCS4301']
+  );
+
+  // Sem 5 baseline SGPA: (4*9 + 4*10 + 4*8 + 4*7 + 2*10) / 18 = 156 / 18 = 8.67
+  const baseSem5 = computeEngineSemesterStats(sem5.courses);
+  assert.equal(baseSem5.totalCredits, 18);
+  assert.equal(baseSem5.arrearCount, 0);
+  assert.equal(baseSem5.sgpa, 8.67);
+
+  // What-If upgrade: SMA1302 from B+ (7) -> O (10) adds +12 weighted points => 168 / 18 = 9.33
+  const upgradedSem5 = computeEngineSemesterStats(sem5.courses, { SMA1302: 'O' });
+  assert.equal(upgradedSem5.sgpa, 9.33);
+
+  // What-If RA: SMA1302 -> RA (0) flags 1 arrear and lowers passed credits
+  const raSem5 = computeEngineSemesterStats(sem5.courses, { SMA1302: 'RA' });
+  assert.equal(raSem5.arrearCount, 1);
+  assert.equal(raSem5.passedCredits, 14);
+  assert.equal(raSem5.sgpa, 7.11);
+
+  // Cumulative CGPA across Sem 5 + Sem 4 updates live with What-If override
+  const baseCgpa = computeEngineCumulativeCgpa(SATHYABAMA_MARKS_SEMESTERS);
+  const simCgpa = computeEngineCumulativeCgpa(SATHYABAMA_MARKS_SEMESTERS, {
+    'sem-5': { SMA1302: 'O' },
+  });
+  assert.ok(simCgpa.cgpa > baseCgpa.cgpa);
+  assert.equal(getInternalStatusTone(43.8), 'safe');
+  assert.equal(getInternalStatusTone(35), 'borderline');
+  assert.equal(getInternalStatusTone(28), 'risk');
+  assert.equal(getGradeStatusTone('O'), 'safe');
+  assert.equal(getGradeStatusTone('B+'), 'borderline');
+  assert.equal(getGradeStatusTone('RA'), 'risk');
+});
+
 
 

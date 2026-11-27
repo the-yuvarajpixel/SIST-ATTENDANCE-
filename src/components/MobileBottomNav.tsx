@@ -21,7 +21,7 @@ const PRIMARY_TABS: {
 }[] = [
   { id: 'overview', label: 'Home', icon: LayoutDashboard },
   { id: 'attendance', label: 'Attendance', icon: CheckSquare },
-  { id: 'results', label: 'Results', icon: Award },
+  { id: 'marks', label: 'Marks', icon: Award },
   { id: 'timetable', label: 'Timetable', icon: Calendar },
 ];
 

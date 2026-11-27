@@ -35,6 +35,7 @@ import {
 import type { CaeStanding, NavSection, ResultsPayload, SessionUser, SubjectCaeMark } from '../core/types';
 import type { CaeUploadResponse, ErpDirectCaeAuthInput } from '../lib/api';
 import { CaeUploadPanel } from './CaeUploadPanel';
+import { MarksCgpaEnginePanel } from './MarksCgpaEnginePanel';
 import type { SectionState } from './OverviewView';
 import { SectionError, SectionSkeleton, StaleBanner } from './SectionNotice';
 
@@ -532,7 +533,7 @@ export function MarksView({
 
       {/* Header & Controls */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 sm:p-6">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+        <div className="flex flex-col gap-4">
           <div className="min-w-0">
             <h2 className="font-display text-xl font-bold text-slate-900 dark:text-slate-50">
               Continuous Assessment (CAE) Marks
@@ -544,7 +545,7 @@ export function MarksView({
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 shrink-0">
+          <div className="flex flex-wrap items-center gap-2.5">
             <div
               role="group"
               aria-label="Filter CAE marks by standing"
@@ -641,6 +642,8 @@ export function MarksView({
           </div>
         </div>
       </section>
+
+      <MarksCgpaEnginePanel payload={payload} isLiveMode={user.mode === 'live'} />
 
       {directErpNotice ? (
         <div
