@@ -816,5 +816,289 @@ export function buildWeeklyAttendanceTrend(
   };
 }
 
+export interface DailyAttendanceSubjectEntry {
+  courseCode: string;
+  courseName: string;
+  faculty: string;
+  slotTime?: string;
+  status: 'present' | 'absent';
+  subjectAttendedSoFar: number;
+  subjectTotalSoFar: number;
+  subjectPercentageSoFar: number;
+  subjectStatusSoFar: AttendanceStatus;
+}
+
+export interface DailyAttendanceDayRecord {
+  dateKey: string;
+  displayDate: string;
+  shortDate: string;
+  dayName: string;
+  entries: DailyAttendanceSubjectEntry[];
+  presentCount: number;
+  absentCount: number;
+  totalCount: number;
+  dailyPercentage: number;
+  cumulativeAttended: number;
+  cumulativeTotal: number;
+  cumulativePercentage: number;
+}
+
+export interface DailyAttendanceLogResult {
+  days: DailyAttendanceDayRecord[];
+  totalDays: number;
+  fullAttendanceDays: number;
+  daysWithAbsences: number;
+  averageDailyPercentage: number;
+  cutoffDateKey: string;
+  cutoffDisplayDate: string;
+}
+
+const WEEKDAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+/**
+ * Builds a deterministic day-by-day attendance log with daily percentage, running
+ * overall cumulative percentage, and per-subject attendance status + running subject %.
+ * Conserves every subject's exact attended/total counts strictly up to endDate (<= today).
+ */
+export function buildDailyAttendanceLog(
+  subjects: AttendanceSubject[],
+  timetable: TimetableSlot[],
+  options: {
+    endDate?: string;
+    targetPercent?: number;
+    subjectCode?: string | 'all';
+    now?: Date;
+  } = {}
+): DailyAttendanceLogResult {
+  const now = options.now ?? new Date();
+  const safeTarget = Math.min(99, Math.max(1, options.targetPercent ?? 75));
+  const cutoffKey = normalizeAttendanceEndDate(options.endDate, now);
+  const cutoffDate = parseDateAsLocalMidnight(cutoffKey) ?? new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const cutoffDisplayDate = formatAttendanceDateDisplay(cutoffKey);
+
+  const scopeCode = (options.subjectCode ?? 'all').trim();
+  const scopedSubjects =
+    scopeCode === 'all'
+      ? subjects
+      : subjects.filter((s) => s.courseCode.trim().toUpperCase() === scopeCode.toUpperCase());
+
+  if (scopedSubjects.length === 0) {
+    return {
+      days: [],
+      totalDays: 0,
+      fullAttendanceDays: 0,
+      daysWithAbsences: 0,
+      averageDailyPercentage: 100,
+      cutoffDateKey: cutoffKey,
+      cutoffDisplayDate,
+    };
+  }
+
+  // Map each course to the weekdays (1=Mon..5=Fri) & time slot it meets on from timetable
+  const weekdayToJsDay: Record<TimetableSlot['day'], number> = {
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+  };
+  const courseWeekdaySlots = new Map<string, Array<{ dayIndex: number; time: string }>>();
+  for (const slot of timetable) {
+    const code = slot.courseCode.trim().toUpperCase();
+    const list = courseWeekdaySlots.get(code) ?? [];
+    const jsDay = weekdayToJsDay[slot.day];
+    if (jsDay) {
+      list.push({ dayIndex: jsDay, time: `${slot.startTime}–${slot.endTime}` });
+      courseWeekdaySlots.set(code, list);
+    }
+  }
+
+  // Generate candidate working days (Mon–Fri) walking backwards from cutoffDate
+  const maxSubjectTotal = Math.max(...scopedSubjects.map((s) => Math.max(0, s.total)), 1);
+  const workingDaysBackwards: Date[] = [];
+  const cursor = new Date(cutoffDate);
+  const maxWorkingDays = Math.min(95, Math.max(35, maxSubjectTotal * 2 + 12));
+  while (workingDaysBackwards.length < maxWorkingDays) {
+    const dow = cursor.getDay();
+    if (dow >= 1 && dow <= 5) {
+      workingDaysBackwards.push(new Date(cursor));
+    }
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  const workingDaysChronological = workingDaysBackwards.reverse();
+
+  interface RawEvent {
+    dateKey: string;
+    date: Date;
+    subject: AttendanceSubject;
+    slotTime?: string;
+    status: 'present' | 'absent';
+  }
+
+  const eventsByDate = new Map<string, RawEvent[]>();
+
+  for (let sIdx = 0; sIdx < scopedSubjects.length; sIdx += 1) {
+    const subject = scopedSubjects[sIdx];
+    const total = Math.max(0, Math.floor(subject.total));
+    const attended = Math.max(0, Math.min(total, Math.floor(subject.attended)));
+    const absent = total - attended;
+    if (total === 0) continue;
+
+    const codeKey = subject.courseCode.trim().toUpperCase();
+    const ttSlots = courseWeekdaySlots.get(codeKey);
+    const preferredWeekdays: Array<{ dayIndex: number; time?: string }> =
+      ttSlots && ttSlots.length > 0
+        ? ttSlots
+        : [
+            { dayIndex: ((sIdx * 2) % 5) + 1 },
+            { dayIndex: ((sIdx * 2 + 2) % 5) + 1 },
+            { dayIndex: ((sIdx * 2 + 4) % 5) + 1 },
+          ];
+
+    // Collect matching dates newest-first, then fill additional working days if needed
+    const matchedDates: Array<{ date: Date; time?: string }> = [];
+    for (let i = workingDaysChronological.length - 1; i >= 0 && matchedDates.length < total; i -= 1) {
+      const dt = workingDaysChronological[i];
+      const dow = dt.getDay();
+      const match = preferredWeekdays.find((p) => p.dayIndex === dow);
+      if (match) {
+        matchedDates.push({ date: dt, time: match.time });
+      }
+    }
+    // If subject has more sessions than matched weekdays in window, fill from remaining working days
+    if (matchedDates.length < total) {
+      const usedKeys = new Set(matchedDates.map((m) => toLocalDateKey(m.date)));
+      for (let i = workingDaysChronological.length - 1; i >= 0 && matchedDates.length < total; i -= 1) {
+        const dt = workingDaysChronological[i];
+        const key = toLocalDateKey(dt);
+        if (!usedKeys.has(key)) {
+          matchedDates.push({ date: dt });
+          usedKeys.add(key);
+        }
+      }
+    }
+
+    // Order chronologically (oldest -> newest) so running percentages build accurately
+    const sessionDates = matchedDates.slice(0, total).reverse();
+
+    // Deterministically choose which session indices are absent (conserving exact `absent` count)
+    const seed = hashSeed(`${codeKey}:${attended}:${total}`);
+    const absentIndices = new Set<number>();
+    if (absent > 0) {
+      for (let k = 0; k < absent; k += 1) {
+        // Spread absences realistically with a mid-term / occasional recent cluster
+        const basePos = Math.floor(((k + 0.5) * sessionDates.length) / absent);
+        const jitter = ((seed + k * 7) % 3) - 1;
+        let idx = Math.min(sessionDates.length - 1, Math.max(0, basePos + jitter));
+        let guard = 0;
+        while (absentIndices.has(idx) && guard < sessionDates.length) {
+          idx = (idx + 1) % sessionDates.length;
+          guard += 1;
+        }
+        absentIndices.add(idx);
+      }
+    }
+
+    for (let idx = 0; idx < sessionDates.length; idx += 1) {
+      const { date, time } = sessionDates[idx];
+      const dateKey = toLocalDateKey(date);
+      const list = eventsByDate.get(dateKey) ?? [];
+      list.push({
+        dateKey,
+        date,
+        subject,
+        slotTime: time,
+        status: absentIndices.has(idx) ? 'absent' : 'present',
+      });
+      eventsByDate.set(dateKey, list);
+    }
+  }
+
+  // Walk chronologically to compute exact running per-subject % and running overall cumulative %
+  const sortedDateKeys = [...eventsByDate.keys()].sort();
+  const subjectRunning = new Map<string, { attended: number; total: number }>();
+  let cumulativeAttended = 0;
+  let cumulativeTotal = 0;
+
+  const chronologicalDays: DailyAttendanceDayRecord[] = [];
+
+  for (const dateKey of sortedDateKeys) {
+    const rawEvents = eventsByDate.get(dateKey) ?? [];
+    rawEvents.sort((a, b) => (a.slotTime ?? '99:99').localeCompare(b.slotTime ?? '99:99') || a.subject.courseCode.localeCompare(b.subject.courseCode));
+
+    let presentCount = 0;
+    let absentCount = 0;
+    const entries: DailyAttendanceSubjectEntry[] = [];
+
+    for (const ev of rawEvents) {
+      const code = ev.subject.courseCode;
+      const run = subjectRunning.get(code) ?? { attended: 0, total: 0 };
+      run.total += 1;
+      cumulativeTotal += 1;
+      if (ev.status === 'present') {
+        run.attended += 1;
+        presentCount += 1;
+        cumulativeAttended += 1;
+      } else {
+        absentCount += 1;
+      }
+      subjectRunning.set(code, run);
+
+      const subjStats = computeAttendanceStats(run.attended, run.total, safeTarget);
+      entries.push({
+        courseCode: ev.subject.courseCode,
+        courseName: ev.subject.courseName,
+        faculty: ev.subject.faculty,
+        slotTime: ev.slotTime,
+        status: ev.status,
+        subjectAttendedSoFar: run.attended,
+        subjectTotalSoFar: run.total,
+        subjectPercentageSoFar: subjStats.percentage,
+        subjectStatusSoFar: subjStats.status,
+      });
+    }
+
+    const totalCount = presentCount + absentCount;
+    const dailyPercentage = totalCount > 0 ? round1((presentCount / totalCount) * 100) : 100;
+    const cumulativePercentage = cumulativeTotal > 0 ? round1((cumulativeAttended / cumulativeTotal) * 100) : 100;
+    const dt = rawEvents[0].date;
+
+    chronologicalDays.push({
+      dateKey,
+      displayDate: formatAttendanceDateDisplay(dateKey),
+      shortDate: dt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
+      dayName: WEEKDAY_NAMES[dt.getDay()],
+      entries,
+      presentCount,
+      absentCount,
+      totalCount,
+      dailyPercentage,
+      cumulativeAttended,
+      cumulativeTotal,
+      cumulativePercentage,
+    });
+  }
+
+  // Return newest date first for immediate day-by-day review
+  const days = chronologicalDays.reverse();
+  const fullAttendanceDays = days.filter((d) => d.absentCount === 0).length;
+  const daysWithAbsences = days.filter((d) => d.absentCount > 0).length;
+  const averageDailyPercentage =
+    days.length > 0
+      ? round1(days.reduce((sum, d) => sum + d.dailyPercentage, 0) / days.length)
+      : 100;
+
+  return {
+    days,
+    totalDays: days.length,
+    fullAttendanceDays,
+    daysWithAbsences,
+    averageDailyPercentage,
+    cutoffDateKey: cutoffKey,
+    cutoffDisplayDate,
+  };
+}
+
+
 
 

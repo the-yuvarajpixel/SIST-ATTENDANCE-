@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Calendar, Minus, Plus, RefreshCw, RotateCcw } from 'lucide-react';
+import { Calendar, CalendarDays, CheckCircle2, Minus, Plus, RefreshCw, RotateCcw, XCircle } from 'lucide-react';
 import {
+  buildDailyAttendanceLog,
   clampAttendanceDateToToday,
   computeOverallAttendance,
   formatAttendanceDateDisplay,
@@ -9,12 +10,13 @@ import {
   normalizeAttendanceEndDate,
   simulateAttendance,
 } from '../core/attendance';
-import type { AttendanceSubject } from '../core/types';
+import type { AttendanceSubject, TimetableSlot } from '../core/types';
 import type { SectionState } from './OverviewView';
 import { SectionError, SectionSkeleton, StaleBanner } from './SectionNotice';
 
 interface AttendanceViewProps {
   section: SectionState<AttendanceSubject[]>;
+  timetable?: TimetableSlot[];
   targetPercent: number;
   endDate: string;
   onChangeEndDate: (nextDate: string) => void;
@@ -23,9 +25,12 @@ interface AttendanceViewProps {
 }
 
 type StatusFilter = 'all' | 'attention' | 'safe';
+type DayStatusFilter = 'all' | 'absences' | 'perfect';
+type DayRangeLimit = 14 | 30 | 999;
 
 export function AttendanceView({
   section,
+  timetable = [],
   targetPercent,
   endDate,
   onChangeEndDate,
@@ -36,6 +41,9 @@ export function AttendanceView({
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [draftEndDate, setDraftEndDate] = useState<string>(endDate);
   const [deltas, setDeltas] = useState<Record<string, { present: number; absent: number }>>({});
+  const [dailySubjectScope, setDailySubjectScope] = useState<string>('all');
+  const [dailyStatusFilter, setDailyStatusFilter] = useState<DayStatusFilter>('all');
+  const [dailyRangeLimit, setDailyRangeLimit] = useState<DayRangeLimit>(14);
 
   useEffect(() => {
     setDraftEndDate(endDate);
@@ -71,6 +79,31 @@ export function AttendanceView({
   }, [rows, targetPercent]);
 
   const hasAnyDelta = Object.values(deltas).some((d) => d.present > 0 || d.absent > 0);
+
+  const effectiveDailySubject =
+    dailySubjectScope === 'all' || subjects.some((s) => s.courseCode === dailySubjectScope)
+      ? dailySubjectScope
+      : 'all';
+
+  const dailyLog = useMemo(
+    () =>
+      buildDailyAttendanceLog(subjects, timetable, {
+        endDate,
+        targetPercent,
+        subjectCode: effectiveDailySubject,
+      }),
+    [subjects, timetable, endDate, targetPercent, effectiveDailySubject]
+  );
+
+  const visibleDailyRecords = useMemo(() => {
+    const byStatus =
+      dailyStatusFilter === 'absences'
+        ? dailyLog.days.filter((d) => d.absentCount > 0)
+        : dailyStatusFilter === 'perfect'
+          ? dailyLog.days.filter((d) => d.absentCount === 0)
+          : dailyLog.days;
+    return byStatus.slice(0, dailyRangeLimit);
+  }, [dailyLog.days, dailyStatusFilter, dailyRangeLimit]);
 
   function adjust(code: string, field: 'present' | 'absent', step: number) {
     setDeltas((prev) => {
@@ -374,6 +407,236 @@ export function AttendanceView({
           </div>
         </section>
       )}
+
+      {/* Day-by-Day Attendance Log with Daily % & Subject Breakdown */}
+      {subjects.length > 0 ? (
+        <section
+          aria-label="Day-by-day attendance log"
+          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden"
+        >
+          <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <CalendarDays className="h-4 w-4 text-blue-700 dark:text-blue-400 shrink-0" aria-hidden="true" />
+                <h3 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
+                  Day-by-Day Attendance Log &amp; Subject Breakdown
+                </h3>
+              </div>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+                {dailyLog.totalDays} working days till {dailyLog.cutoffDisplayDate} ·{' '}
+                {dailyLog.fullAttendanceDays} full days · {dailyLog.daysWithAbsences} with absences · Avg daily{' '}
+                {dailyLog.averageDailyPercentage.toFixed(1)}%
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <select
+                aria-label="Filter day-by-day attendance by subject"
+                value={effectiveDailySubject}
+                onChange={(e) => setDailySubjectScope(e.target.value)}
+                className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-600/30 cursor-pointer max-w-[230px] truncate"
+              >
+                <option value="all">All subjects ({subjects.length})</option>
+                {subjects.map((subj) => (
+                  <option key={subj.courseCode} value={subj.courseCode}>
+                    {subj.courseCode} · {subj.courseName}
+                  </option>
+                ))}
+              </select>
+
+              <div
+                role="group"
+                aria-label="Filter days by attendance status"
+                className="inline-flex items-center rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5 border border-slate-200 dark:border-slate-700/70"
+              >
+                {(
+                  [
+                    { id: 'all', label: 'All days' },
+                    { id: 'absences', label: 'With absences' },
+                    { id: 'perfect', label: '100% present' },
+                  ] as const
+                ).map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setDailyStatusFilter(item.id)}
+                    aria-pressed={dailyStatusFilter === item.id}
+                    className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                      dailyStatusFilter === item.id
+                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+
+              <select
+                aria-label="Day log window"
+                value={dailyRangeLimit}
+                onChange={(e) => setDailyRangeLimit(Number(e.target.value) as DayRangeLimit)}
+                className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-600/30 cursor-pointer"
+              >
+                <option value={14}>Last 14 days</option>
+                <option value={30}>Last 30 days</option>
+                <option value={999}>All days ({dailyLog.totalDays})</option>
+              </select>
+            </div>
+          </div>
+
+          {visibleDailyRecords.length === 0 ? (
+            <div className="p-8 text-center">
+              <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                No daily attendance entries match this filter.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setDailySubjectScope('all');
+                  setDailyStatusFilter('all');
+                }}
+                className="mt-2 text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline cursor-pointer"
+              >
+                Reset daily filters
+              </button>
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-200 dark:divide-slate-800">
+              {visibleDailyRecords.map((day) => {
+                const dayTone =
+                  day.dailyPercentage < targetPercent
+                    ? 'text-red-700 dark:text-red-400'
+                    : day.dailyPercentage < 100
+                      ? 'text-amber-700 dark:text-amber-400'
+                      : 'text-emerald-700 dark:text-emerald-400';
+                const dayBarTone =
+                  day.dailyPercentage < targetPercent
+                    ? 'bg-red-600 dark:bg-red-500'
+                    : day.dailyPercentage < 100
+                      ? 'bg-amber-500'
+                      : 'bg-emerald-600 dark:bg-emerald-500';
+
+                return (
+                  <div key={day.dateKey} className="px-5 py-4 space-y-3">
+                    {/* Day Summary Row */}
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                        <span className="font-display text-sm font-semibold text-slate-900 dark:text-slate-50">
+                          {day.dayName}, {day.displayDate}
+                        </span>
+                        <span className="text-slate-300 dark:text-slate-700" aria-hidden="true">·</span>
+                        <span className="font-mono text-xs tabular-nums text-slate-600 dark:text-slate-400">
+                          {day.presentCount}/{day.totalCount} classes present
+                          {day.absentCount > 0 ? (
+                            <span className="text-red-700 dark:text-red-400 font-medium">
+                              {' '}
+                              ({day.absentCount} absent)
+                            </span>
+                          ) : null}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-4 text-xs font-mono tabular-nums">
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-500 dark:text-slate-400 font-sans">Daily</span>
+                          <div className="h-1.5 w-16 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden" aria-hidden="true">
+                            <div
+                              className={`h-full rounded-full ${dayBarTone}`}
+                              style={{ width: `${Math.min(100, day.dailyPercentage)}%` }}
+                            />
+                          </div>
+                          <span className={`font-semibold ${dayTone}`}>
+                            {day.dailyPercentage.toFixed(1)}%
+                          </span>
+                        </div>
+                        <div className="text-slate-600 dark:text-slate-400">
+                          <span className="font-sans">Cumulative: </span>
+                          <strong
+                            className={
+                              day.cumulativePercentage < targetPercent
+                                ? 'text-red-700 dark:text-red-400'
+                                : 'text-slate-900 dark:text-slate-100'
+                            }
+                          >
+                            {day.cumulativePercentage.toFixed(1)}%
+                          </strong>
+                          <span className="ml-1 text-[11px] text-slate-400">
+                            ({day.cumulativeAttended}/{day.cumulativeTotal})
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Subject-by-Subject Rows for this Date */}
+                    <div className="overflow-x-auto rounded-lg border border-slate-200/80 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/30">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800/70">
+                          {day.entries.map((entry) => {
+                            const isPresent = entry.status === 'present';
+                            const subjTone =
+                              entry.subjectStatusSoFar === 'shortage'
+                                ? 'text-red-700 dark:text-red-400'
+                                : entry.subjectStatusSoFar === 'borderline'
+                                  ? 'text-amber-700 dark:text-amber-400'
+                                  : 'text-emerald-700 dark:text-emerald-400';
+                            return (
+                              <tr key={`${day.dateKey}-${entry.courseCode}`}>
+                                <td className="py-2 pl-3.5 pr-3 font-mono font-medium text-slate-700 dark:text-slate-300 whitespace-nowrap w-28">
+                                  {entry.courseCode}
+                                </td>
+                                <td className="py-2 px-3 text-slate-900 dark:text-slate-100 min-w-[180px]">
+                                  <span className="font-medium">{entry.courseName}</span>
+                                  {entry.slotTime ? (
+                                    <span className="ml-2 font-mono text-[11px] text-slate-400 dark:text-slate-500">
+                                      {entry.slotTime}
+                                    </span>
+                                  ) : null}
+                                </td>
+                                <td className="py-2 px-3 whitespace-nowrap w-28">
+                                  <span
+                                    className={`inline-flex items-center gap-1 font-semibold ${
+                                      isPresent
+                                        ? 'text-emerald-700 dark:text-emerald-400'
+                                        : 'text-red-700 dark:text-red-400'
+                                    }`}
+                                  >
+                                    {isPresent ? (
+                                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                                    ) : (
+                                      <XCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                                    )}
+                                    {isPresent ? 'Present' : 'Absent'}
+                                  </span>
+                                </td>
+                                <td className="py-2 pl-3 pr-3.5 text-right font-mono tabular-nums whitespace-nowrap">
+                                  <span className="text-slate-500 dark:text-slate-400 mr-2">
+                                    {entry.subjectAttendedSoFar}/{entry.subjectTotalSoFar}
+                                  </span>
+                                  <span className={`font-semibold ${subjTone}`}>
+                                    {entry.subjectPercentageSoFar.toFixed(1)}%
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="border-t border-slate-200 dark:border-slate-800 px-5 py-3 text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center justify-between gap-2">
+            <span>
+              Showing {visibleDailyRecords.length} of {dailyLog.totalDays} recorded working days up to {dailyLog.cutoffDisplayDate}.
+            </span>
+            <span>Per-subject running percentages reconcile exactly with your subject attendance totals above.</span>
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }

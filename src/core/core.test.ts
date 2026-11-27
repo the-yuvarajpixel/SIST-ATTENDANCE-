@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   analyzeAttendanceInsights,
+  buildDailyAttendanceLog,
   buildWeeklyAttendanceTrend,
   clampAttendanceDateToToday,
   computeAttendanceStats,
@@ -19,6 +20,7 @@ import {
   computeSemesterGpa,
   evaluateCgpaThreshold,
   planTargetCgpa,
+  simulateTargetCgpaPlan,
 } from './gpa';
 import {
   buildAllSubjectsClassComparison,
@@ -692,6 +694,90 @@ test('computeOverviewSemesterCgpa computes overall CGPA across course-grade and 
   assert.equal(empty.totalCredits, 0);
   assert.equal(empty.classification, 'Incomplete');
 });
+
+test('simulateTargetCgpaPlan calculates required SGPA, grade mix, and feasibility across future semesters', () => {
+  // 8.5 CGPA over 100 credits, target 9.0 over 2 remaining semesters of 20 credits (40 future cr)
+  // Required = (9.0 * 140 - 8.5 * 100) / 40 = (1260 - 850) / 40 = 410 / 40 = 10.25 -> unreachable
+  const unreachable = simulateTargetCgpaPlan(8.5, 100, 9.0, 2, 20, 6);
+  assert.equal(unreachable.status, 'unreachable');
+  assert.equal(unreachable.maxPossibleCgpa, 8.93);
+
+  // Achievable target: 8.5 CGPA over 100 cr, target 8.8 over 3 remaining sems of 20 cr (60 cr)
+  // Required = (8.8 * 160 - 850) / 60 = 558 / 60 = 9.30 -> challenging
+  const challenging = simulateTargetCgpaPlan(8.5, 100, 8.8, 3, 20, 6);
+  assert.equal(challenging.status, 'challenging');
+  assert.equal(challenging.requiredAverageSgpa, 9.3);
+  assert.ok(challenging.recommendedMixSgpa >= challenging.requiredAverageSgpa);
+  assert.equal(challenging.milestones.length, 3);
+  assert.equal(challenging.milestones[2].projectedCgpa, 8.8);
+
+  // Comfortable target: 8.8 CGPA over 100 cr, target 7.5 over 2 sems of 20 cr
+  const met = simulateTargetCgpaPlan(8.8, 100, 7.5, 2, 20, 6);
+  assert.equal(met.status, 'already-met');
+});
+
+test('buildDailyAttendanceLog conserves exact subject attendance totals and clamps dates to cutoff', () => {
+  const subjects: AttendanceSubject[] = [
+    {
+      courseCode: 'SCSA1601',
+      courseName: 'Computer Networks',
+      faculty: 'Dr. A',
+      credits: 4,
+      attended: 18,
+      total: 22,
+      lastUpdated: '2026-11-26',
+    },
+    {
+      courseCode: 'SCSA1602',
+      courseName: 'Operating Systems',
+      faculty: 'Dr. B',
+      credits: 4,
+      attended: 15,
+      total: 20,
+      lastUpdated: '2026-11-26',
+    },
+  ];
+  const slots: TimetableSlot[] = [
+    { id: '1', day: 'Mon', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1601', courseName: 'Computer Networks', room: 'CS-1', faculty: 'Dr. A', kind: 'Lecture' },
+    { id: '2', day: 'Wed', startTime: '10:00', endTime: '10:50', courseCode: 'SCSA1601', courseName: 'Computer Networks', room: 'CS-1', faculty: 'Dr. A', kind: 'Lecture' },
+    { id: '3', day: 'Tue', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1602', courseName: 'Operating Systems', room: 'CS-2', faculty: 'Dr. B', kind: 'Lecture' },
+    { id: '4', day: 'Thu', startTime: '11:00', endTime: '11:50', courseCode: 'SCSA1602', courseName: 'Operating Systems', room: 'CS-2', faculty: 'Dr. B', kind: 'Lecture' },
+  ];
+
+  const now = new Date(2026, 10, 26, 12, 0, 0);
+  const log = buildDailyAttendanceLog(subjects, slots, {
+    endDate: '2026-11-26',
+    targetPercent: 75,
+    now,
+  });
+
+  assert.ok(log.days.length > 0);
+  assert.equal(log.cutoffDateKey, '2026-11-26');
+  // Newest day must be <= cutoffDateKey and match exact cumulative totals (33/42)
+  assert.ok(log.days[0].dateKey <= '2026-11-26');
+  assert.equal(log.days[0].cumulativeAttended, 33);
+  assert.equal(log.days[0].cumulativeTotal, 42);
+
+  // Per-subject conservation check
+  const allEntries = log.days.flatMap((d) => d.entries);
+  const cnEntries = allEntries.filter((e) => e.courseCode === 'SCSA1601');
+  const osEntries = allEntries.filter((e) => e.courseCode === 'SCSA1602');
+  assert.equal(cnEntries.length, 22);
+  assert.equal(cnEntries.filter((e) => e.status === 'present').length, 18);
+  assert.equal(osEntries.length, 20);
+  assert.equal(osEntries.filter((e) => e.status === 'present').length, 15);
+
+  // Subject filter returns only matching course
+  const osOnly = buildDailyAttendanceLog(subjects, slots, {
+    endDate: '2026-11-26',
+    subjectCode: 'SCSA1602',
+    now,
+  });
+  assert.ok(osOnly.days.every((d) => d.entries.every((e) => e.courseCode === 'SCSA1602')));
+  assert.equal(osOnly.days[0].cumulativeAttended, 15);
+  assert.equal(osOnly.days[0].cumulativeTotal, 20);
+});
+
 
 
 

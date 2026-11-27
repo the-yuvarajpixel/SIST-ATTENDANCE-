@@ -4,6 +4,7 @@ import {
   Calculator,
   Plus,
   RotateCcw,
+  Target,
   Trash2,
 } from 'lucide-react';
 import {
@@ -12,6 +13,7 @@ import {
   computeOverviewSemesterCgpa,
   createDefaultCalculatorSemesters,
   seedCalculatorFromSemesters,
+  simulateTargetCgpaPlan,
   type OverviewCalculatorCourse,
   type OverviewCalculatorSemester,
 } from '../core/gpa';
@@ -120,6 +122,12 @@ export function OverviewCgpaCalculator({
     return initial[initial.length - 1]?.id ?? 'sem-1';
   });
   const [layoutMode, setLayoutMode] = useState<'single' | 'all'>('single');
+  const [targetCgpa, setTargetCgpa] = useState<number>(() => {
+    const base = erpCgpa && erpCgpa > 0 ? erpCgpa : 8.5;
+    return Math.min(9.5, Math.max(7.5, Math.round((base + 0.35) * 4) / 4));
+  });
+  const [remainingSemesters, setRemainingSemesters] = useState<number>(3);
+  const [creditsPerSemester, setCreditsPerSemester] = useState<number>(20);
   const seededFromErpRef = useRef<boolean>(erpSemesters.length > 0);
 
   // When ERP semesters arrive asynchronously and user hasn't customized yet, seed automatically
@@ -147,6 +155,31 @@ export function OverviewCgpaCalculator({
   const activeBreakdown = useMemo(
     () => calculation.semesters.find((b) => b.id === activeSemester?.id) ?? null,
     [calculation.semesters, activeSemester]
+  );
+
+  const highestSemesterNumber = useMemo(
+    () => semesters.reduce((max, s) => Math.max(max, s.semester), 0),
+    [semesters]
+  );
+
+  const targetSimulation = useMemo(
+    () =>
+      simulateTargetCgpaPlan(
+        calculation.overallCgpa,
+        calculation.totalCredits,
+        targetCgpa,
+        remainingSemesters,
+        creditsPerSemester,
+        highestSemesterNumber + 1
+      ),
+    [
+      calculation.overallCgpa,
+      calculation.totalCredits,
+      targetCgpa,
+      remainingSemesters,
+      creditsPerSemester,
+      highestSemesterNumber,
+    ]
   );
 
   function commitSemesters(updater: (prev: OverviewCalculatorSemester[]) => OverviewCalculatorSemester[]) {
@@ -926,6 +959,228 @@ export function OverviewCgpaCalculator({
           <p className="pt-3 border-t border-slate-200 dark:border-slate-800 font-mono text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
             Scale: O 10 · A+ 9 · A 8 · B+ 7 · B 6 · C 5 · RA 0
           </p>
+        </div>
+      </div>
+
+      {/* Integrated Target CGPA Simulator */}
+      <div
+        id="target-cgpa-simulator"
+        className="border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900"
+      >
+        <div className="px-5 py-4 border-b border-slate-200/80 dark:border-slate-800/80 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <Target className="h-4 w-4 text-blue-700 dark:text-blue-400 shrink-0" aria-hidden="true" />
+              <h4 className="font-display text-sm font-semibold text-slate-900 dark:text-slate-50">
+                Target CGPA Simulator
+              </h4>
+            </div>
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+              Set your desired graduation CGPA to calculate the required SGPA and subject grade mix across upcoming semesters.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5 shrink-0" role="group" aria-label="Target CGPA presets">
+            {[7.5, 8.0, 8.5, 9.0, 9.5].map((preset) => {
+              const active = Math.abs(targetCgpa - preset) < 0.01;
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => setTargetCgpa(preset)}
+                  aria-pressed={active}
+                  className={`rounded-md px-2.5 py-1 font-mono text-xs font-medium tabular-nums transition-colors cursor-pointer ${
+                    active
+                      ? 'bg-blue-700 text-white dark:bg-blue-600'
+                      : 'border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {preset.toFixed(1)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="p-5 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          {/* Controls */}
+          <div className="lg:col-span-5 space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <label
+                  htmlFor="targetCgpaInput"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+                >
+                  Desired CGPA
+                </label>
+                <input
+                  id="targetCgpaInput"
+                  type="number"
+                  min={5}
+                  max={10}
+                  step={0.05}
+                  value={targetCgpa}
+                  onChange={(e) => {
+                    const num = Number(e.target.value);
+                    if (Number.isFinite(num)) {
+                      setTargetCgpa(Math.min(10, Math.max(0, num)));
+                    }
+                  }}
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 font-mono text-sm font-semibold tabular-nums text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label
+                  htmlFor="remainingSemestersInput"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+                >
+                  Future Sems
+                </label>
+                <select
+                  id="remainingSemestersInput"
+                  value={remainingSemesters}
+                  onChange={(e) => setRemainingSemesters(Number(e.target.value))}
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 font-mono text-sm tabular-nums text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20 cursor-pointer"
+                >
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                    <option key={n} value={n}>
+                      {n} {n === 1 ? 'sem' : 'sems'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label
+                  htmlFor="creditsPerSemesterInput"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+                >
+                  Credits / Sem
+                </label>
+                <input
+                  id="creditsPerSemesterInput"
+                  type="number"
+                  min={4}
+                  max={40}
+                  step={1}
+                  value={creditsPerSemester}
+                  onChange={(e) => {
+                    const num = Number(e.target.value);
+                    if (Number.isFinite(num)) {
+                      setCreditsPerSemester(Math.min(40, Math.max(4, Math.round(num))));
+                    }
+                  }}
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 font-mono text-sm tabular-nums text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                <span>Adjust target CGPA</span>
+                <span className="font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                  Max reachable: {targetSimulation.maxPossibleCgpa.toFixed(2)}
+                </span>
+              </div>
+              <input
+                type="range"
+                aria-label="Desired Target CGPA slider"
+                min={5.5}
+                max={10}
+                step={0.05}
+                value={Math.min(10, Math.max(5.5, targetCgpa))}
+                onChange={(e) => setTargetCgpa(Number(e.target.value))}
+                className="w-full accent-blue-700 dark:accent-blue-500 cursor-pointer"
+              />
+            </div>
+          </div>
+
+          {/* Live Simulation Result */}
+          <div className="lg:col-span-7 space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
+              <div>
+                <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                  Required Avg SGPA
+                </p>
+                <p
+                  data-testid="target-required-sgpa"
+                  className={`mt-1 font-mono text-2xl font-bold tabular-nums ${
+                    targetSimulation.status === 'unreachable'
+                      ? 'text-red-700 dark:text-red-400'
+                      : targetSimulation.status === 'challenging'
+                        ? 'text-amber-700 dark:text-amber-400'
+                        : 'text-emerald-700 dark:text-emerald-400'
+                  }`}
+                >
+                  {targetSimulation.requiredAverageSgpa.toFixed(2)}
+                </p>
+                <p className="mt-0.5 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                  over {targetSimulation.totalFutureCredits} future cr
+                </p>
+              </div>
+
+              <div className="sm:col-span-2">
+                <p
+                  className={`text-sm font-semibold ${
+                    targetSimulation.status === 'unreachable'
+                      ? 'text-red-700 dark:text-red-400'
+                      : targetSimulation.status === 'challenging'
+                        ? 'text-amber-700 dark:text-amber-400'
+                        : 'text-emerald-700 dark:text-emerald-400'
+                  }`}
+                >
+                  {targetSimulation.headline}
+                </p>
+                <p className="mt-1 text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                  {targetSimulation.detail}
+                </p>
+              </div>
+            </div>
+
+            {/* Recommended Grade Mix + Future Milestones */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+              <div>
+                <p className="font-medium text-slate-700 dark:text-slate-300">
+                  Suggested Grade Mix per Semester (~{targetSimulation.coursesPerSemesterEstimate} subjects)
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 font-mono tabular-nums">
+                  {targetSimulation.recommendedGradeMix.map((item) => (
+                    <span key={item.grade} className="inline-flex items-baseline gap-1">
+                      <span className="font-semibold text-slate-900 dark:text-slate-100">
+                        {item.count}×
+                      </span>
+                      <span className={`font-semibold ${GRADE_TEXT_TONE[item.grade]}`}>
+                        {item.grade}
+                      </span>
+                      <span className="text-[11px] text-slate-400">({item.points})</span>
+                    </span>
+                  ))}
+                  <span className="text-slate-400 dark:text-slate-600" aria-hidden="true">→</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">
+                    {targetSimulation.recommendedMixSgpa.toFixed(2)} SGPA
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <p className="font-medium text-slate-700 dark:text-slate-300">
+                  Projected Semester Milestones
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 font-mono tabular-nums">
+                  {targetSimulation.milestones.map((m, idx) => (
+                    <span key={m.label} className="inline-flex items-center gap-1 text-slate-600 dark:text-slate-400">
+                      {idx > 0 ? <span className="text-slate-300 dark:text-slate-700 mr-1">→</span> : null}
+                      <span>{m.label}:</span>
+                      <strong className="text-slate-900 dark:text-slate-100">
+                        {m.projectedCgpa.toFixed(2)}
+                      </strong>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </section>

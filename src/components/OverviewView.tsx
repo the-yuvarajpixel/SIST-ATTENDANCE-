@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, ArrowUpRight, Calculator, CalendarClock, TrendingDown, TrendingUp } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Calculator, CalendarClock, Link2, RefreshCw, TrendingDown, TrendingUp } from 'lucide-react';
 import {
   Area,
   CartesianGrid,
@@ -25,8 +25,10 @@ import type {
   DeadlineItem,
   NavSection,
   NotificationItem,
+  PortalSyncReport,
   ResultsPayload,
   SectionEnvelope,
+  SessionUser,
   StudentProfile,
   TimetableSlot,
 } from '../core/types';
@@ -41,6 +43,7 @@ export interface SectionState<T> {
 }
 
 interface OverviewViewProps {
+  user?: SessionUser;
   profile: SectionState<StudentProfile>;
   attendance: SectionState<AttendanceSubject[]>;
   timetable: SectionState<TimetableSlot[]>;
@@ -50,6 +53,9 @@ interface OverviewViewProps {
   completedDeadlineIds: Set<string>;
   readNotificationIds: Set<string>;
   attendanceTarget: number;
+  syncingPortals?: boolean;
+  lastSyncReport?: PortalSyncReport | null;
+  onSyncPortals?: () => void;
   onChangeAttendanceTarget?: (target: number) => void;
   onNavigate: (section: NavSection) => void;
   onRetrySection: (section: 'profile' | 'attendance' | 'timetable' | 'results' | 'deadlines' | 'notifications') => void;
@@ -166,6 +172,7 @@ function WeeklyTrendDot({ cx, cy, payload }: WeeklyDotProps) {
 }
 
 export function OverviewView({
+  user,
   profile,
   attendance,
   timetable,
@@ -175,6 +182,9 @@ export function OverviewView({
   completedDeadlineIds,
   readNotificationIds,
   attendanceTarget,
+  syncingPortals = false,
+  lastSyncReport = null,
+  onSyncPortals,
   onChangeAttendanceTarget,
   onNavigate,
   onRetrySection,
@@ -333,6 +343,80 @@ export function OverviewView({
           </button>
         </div>
       </div>
+
+      {/* Realistic College ERP & Moodle LMS Live Sync Strip */}
+      {user ? (
+        <section
+          aria-label="ERP and Moodle LMS sync status"
+          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3"
+        >
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+            <span className="inline-flex items-center gap-1.5 font-medium text-slate-900 dark:text-slate-100">
+              <Link2 className="h-3.5 w-3.5 text-blue-700 dark:text-blue-400 shrink-0" aria-hidden="true" />
+              Portal Sync
+            </span>
+            <span className="text-slate-600 dark:text-slate-400">
+              ERP (<span className="font-mono">erp.sathyabama.ac.in</span>):{' '}
+              <strong
+                className={
+                  user.mode === 'live' && user.erpTokenPresent
+                    ? 'text-emerald-700 dark:text-emerald-400'
+                    : 'text-slate-800 dark:text-slate-200'
+                }
+              >
+                {user.mode === 'live' && user.erpTokenPresent
+                  ? 'Live Connected'
+                  : user.mode === 'live'
+                    ? 'Token Required'
+                    : 'Sample Preview'}
+              </strong>
+            </span>
+            <span className="text-slate-300 dark:text-slate-700 hidden sm:inline" aria-hidden="true">·</span>
+            <span className="text-slate-600 dark:text-slate-400">
+              LMS (<span className="font-mono">sathyabama.cognibot.in</span>):{' '}
+              <strong
+                className={
+                  user.mode === 'live' && user.lmsTokenPresent
+                    ? 'text-emerald-700 dark:text-emerald-400'
+                    : 'text-slate-800 dark:text-slate-200'
+                }
+              >
+                {user.mode === 'live' && user.lmsTokenPresent
+                  ? 'Live Connected'
+                  : user.mode === 'live'
+                    ? 'Optional'
+                    : 'Sample Preview'}
+              </strong>
+            </span>
+            {lastSyncReport ? (
+              <span className="font-mono text-[11px] tabular-nums text-slate-500 dark:text-slate-400">
+                Synced {new Date(lastSyncReport.syncedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            ) : null}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {onSyncPortals ? (
+              <button
+                type="button"
+                onClick={onSyncPortals}
+                disabled={syncingPortals}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3 py-1.5 text-xs font-medium text-white transition-colors whitespace-nowrap cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${syncingPortals ? 'animate-spin' : ''}`} aria-hidden="true" />
+                {syncingPortals ? 'Syncing ERP & LMS...' : 'Sync ERP & LMS'}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => onNavigate('sync')}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
+            >
+              {user.mode === 'live' ? 'Manage Sync' : 'Connect Live ERP & LMS'}
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       {/* Focal Anchor: Next Class Hero Surface */}
       <section

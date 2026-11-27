@@ -3,6 +3,7 @@ import { BookOpen, CheckCircle2, ChevronDown, ClipboardPaste, ExternalLink, Info
 import type { DataSourceMode, ErpUserRole, LiveAdaptersSummary, SessionUser } from '../core/types';
 import { api } from '../lib/api';
 import { AppFooter } from './AppFooter';
+import { PasswordInput } from './PasswordInput';
 
 interface SignInViewProps {
   theme: 'light' | 'dark';
@@ -642,14 +643,14 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                             >
                               ERP Password
                             </label>
-                            <input
+                            <PasswordInput
                               id="erpPassword"
                               name="erpPassword"
-                              type="password"
                               autoComplete="current-password"
                               value={erpPassword}
                               onChange={(e) => setErpPassword(e.target.value)}
                               placeholder="Enter ERP portal password"
+                              toggleLabel="ERP password"
                               aria-invalid={Boolean(fieldErrors.erpPassword)}
                               className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                             />
@@ -676,17 +677,17 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                           {showOptionalErpToken ? (
                             <div className="space-y-1.5">
                               <div className="flex items-center gap-2">
-                                <input
+                                <PasswordInput
                                   ref={erpTokenInputRef}
                                   id="autoErpToken"
                                   name="erpToken"
-                                  type="password"
                                   value={erpToken}
                                   onChange={(e) => setErpToken(e.target.value)}
                                   placeholder="Optional: paste Access-Token from erp.sathyabama.ac.in"
                                   aria-label="ERP Access-Token (optional)"
+                                  toggleLabel="ERP Access-Token"
                                   aria-invalid={Boolean(fieldErrors.erpToken)}
-                                  className="flex-1 min-w-0 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+                                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                                 />
                                 <button
                                   type="button"
@@ -760,14 +761,14 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                             >
                               Moodle Password
                             </label>
-                            <input
+                            <PasswordInput
                               id="lmsPassword"
                               name="lmsPassword"
-                              type="password"
                               autoComplete="current-password"
                               value={lmsPassword}
                               onChange={(e) => setLmsPassword(e.target.value)}
                               placeholder="Never stored"
+                              toggleLabel="Moodle password"
                               aria-invalid={Boolean(fieldErrors.lmsPassword)}
                               className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                             />
@@ -798,13 +799,13 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                             <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
                           </a>
                         </div>
-                        <input
+                        <PasswordInput
                           id="erpToken"
                           name="erpToken"
-                          type="password"
                           value={erpToken}
                           onChange={(e) => setErpToken(e.target.value)}
                           placeholder="Paste ERP Access-Token, Bearer JWT, or session cookie"
+                          toggleLabel="ERP Access-Token"
                           aria-invalid={Boolean(fieldErrors.erpToken)}
                           className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3.5 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                         />
@@ -831,13 +832,13 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
                             <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
                           </a>
                         </div>
-                        <input
+                        <PasswordInput
                           id="lmsToken"
                           name="lmsToken"
-                          type="password"
                           value={lmsToken}
                           onChange={(e) => setLmsToken(e.target.value)}
                           placeholder="Paste your Moodle mobile web service key"
+                          toggleLabel="Moodle web-service token"
                           aria-invalid={Boolean(fieldErrors.lmsToken)}
                           className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3.5 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                         />

@@ -732,6 +732,170 @@ export function createDefaultCalculatorSemesters(): OverviewCalculatorSemester[]
   ];
 }
 
+export interface TargetCgpaGradeMixItem {
+  grade: GradeLetter;
+  points: number;
+  count: number;
+}
+
+export interface TargetCgpaMilestone {
+  step: number;
+  label: string;
+  projectedCgpa: number;
+  cumulativeCredits: number;
+}
+
+export interface TargetCgpaSimulationResult {
+  targetCgpa: number;
+  currentCgpa: number;
+  completedCredits: number;
+  remainingSemesters: number;
+  creditsPerSemester: number;
+  totalFutureCredits: number;
+  requiredAverageSgpa: number;
+  maxPossibleCgpa: number;
+  minPassingCgpa: number;
+  status: 'already-met' | 'achievable' | 'challenging' | 'unreachable';
+  headline: string;
+  detail: string;
+  coursesPerSemesterEstimate: number;
+  recommendedGradeMix: TargetCgpaGradeMixItem[];
+  recommendedMixSgpa: number;
+  milestones: TargetCgpaMilestone[];
+}
+
+const PASSING_GRADES: GradeLetter[] = ['C', 'B', 'B+', 'A', 'A+', 'O'];
+
+/**
+ * Simulates what average SGPA and subject-grade mix a student needs across
+ * future semesters to reach a desired Target CGPA.
+ */
+export function simulateTargetCgpaPlan(
+  currentCgpa: number,
+  completedCredits: number,
+  targetCgpa: number,
+  remainingSemesters: number,
+  creditsPerSemester = 20,
+  startingSemesterNumber = 1
+): TargetCgpaSimulationResult {
+  const safeCurrent = clamp(Number(currentCgpa) || 0, 0, 10);
+  const safeCompleted = Math.max(0, Number(completedCredits) || 0);
+  const safeTarget = clamp(Number(targetCgpa) || 0, 0, 10);
+  const safeSemesters = Math.min(8, Math.max(1, Math.round(Number(remainingSemesters) || 1)));
+  const safeCreditsPerSem = Math.min(40, Math.max(4, Math.round(Number(creditsPerSemester) || 20)));
+  const totalFutureCredits = safeSemesters * safeCreditsPerSem;
+  const totalCredits = safeCompleted + totalFutureCredits;
+
+  const maxPossibleCgpa = round2(
+    (safeCurrent * safeCompleted + 10 * totalFutureCredits) / totalCredits
+  );
+  const minPassingCgpa = round2(
+    (safeCurrent * safeCompleted + 5 * totalFutureCredits) / totalCredits
+  );
+
+  const rawRequired =
+    (safeTarget * totalCredits - safeCurrent * safeCompleted) / totalFutureCredits;
+  const requiredAverageSgpa = round2(Math.max(0, rawRequired));
+
+  let status: TargetCgpaSimulationResult['status'];
+  let headline: string;
+  let detail: string;
+
+  if (rawRequired <= 5.0 && safeCompleted > 0 && minPassingCgpa >= safeTarget) {
+    status = 'already-met';
+    headline = `Target ${safeTarget.toFixed(2)} CGPA is comfortably secured`;
+    detail = `Even with minimum passing grades (5.00 SGPA), you finish at ${minPassingCgpa.toFixed(2)} CGPA across ${safeSemesters} remaining ${safeSemesters === 1 ? 'semester' : 'semesters'}.`;
+  } else if (rawRequired > 10) {
+    status = 'unreachable';
+    headline = `Needs ${rawRequired.toFixed(2)} SGPA — exceeds 10.00 ceiling`;
+    detail = `Scoring all O grades (10.00 SGPA) across ${safeSemesters} remaining ${safeSemesters === 1 ? 'semester' : 'semesters'} (${totalFutureCredits} cr) reaches a maximum of ${maxPossibleCgpa.toFixed(2)} CGPA.`;
+  } else if (requiredAverageSgpa >= 9.25) {
+    status = 'challenging';
+    headline = `Need ${requiredAverageSgpa.toFixed(2)} avg SGPA across ${safeSemesters} ${safeSemesters === 1 ? 'semester' : 'semesters'}`;
+    detail = `Requires mostly O and A+ grades over the next ${totalFutureCredits} credits to reach ${safeTarget.toFixed(2)} CGPA.`;
+  } else {
+    status = 'achievable';
+    headline = `Need ${requiredAverageSgpa.toFixed(2)} avg SGPA across ${safeSemesters} ${safeSemesters === 1 ? 'semester' : 'semesters'}`;
+    detail = `Maintain an average of ${requiredAverageSgpa.toFixed(2)} SGPA over the next ${totalFutureCredits} credits to hit ${safeTarget.toFixed(2)} CGPA.`;
+  }
+
+  // Construct an intuitive equal-credit subject grade mix per semester (~4 credits per course)
+  const coursesPerSemesterEstimate = Math.min(8, Math.max(3, Math.round(safeCreditsPerSem / 4)));
+  const goalSgpa = Math.min(10, Math.max(5, requiredAverageSgpa));
+  // Start every subject at the floor passing grade (C = 5) and greedily upgrade subjects
+  // until average grade points >= goalSgpa.
+  const gradeIndices = Array.from({ length: coursesPerSemesterEstimate }, () => 0);
+  const targetPointsSum = Math.ceil(goalSgpa * coursesPerSemesterEstimate - 1e-9);
+  let currentPointsSum = coursesPerSemesterEstimate * GRADE_POINTS[PASSING_GRADES[0]];
+
+  while (currentPointsSum < targetPointsSum) {
+    // Upgrade the lowest-graded subject first so the mix stays balanced and realistic
+    let lowestIdx = -1;
+    let lowestVal = Infinity;
+    for (let i = 0; i < gradeIndices.length; i += 1) {
+      if (gradeIndices[i] < PASSING_GRADES.length - 1 && gradeIndices[i] < lowestVal) {
+        lowestVal = gradeIndices[i];
+        lowestIdx = i;
+      }
+    }
+    if (lowestIdx === -1) break;
+    gradeIndices[lowestIdx] += 1;
+    currentPointsSum += 1;
+  }
+
+  const mixCounts = new Map<GradeLetter, number>();
+  for (const idx of gradeIndices) {
+    const g = PASSING_GRADES[idx];
+    mixCounts.set(g, (mixCounts.get(g) ?? 0) + 1);
+  }
+
+  const recommendedGradeMix: TargetCgpaGradeMixItem[] = ORDERED_GRADES.filter(
+    (g) => (mixCounts.get(g) ?? 0) > 0
+  ).map((grade) => ({
+    grade,
+    points: GRADE_POINTS[grade],
+    count: mixCounts.get(grade) ?? 0,
+  }));
+
+  const recommendedMixSgpa = round2(currentPointsSum / coursesPerSemesterEstimate);
+
+  // Build future semester progression milestones using achievable pace (capped at 10.0)
+  const paceSgpa = Math.min(10, Math.max(5, requiredAverageSgpa));
+  const milestones: TargetCgpaMilestone[] = [];
+  let runWeighted = safeCurrent * safeCompleted;
+  let runCredits = safeCompleted;
+  for (let i = 1; i <= safeSemesters; i += 1) {
+    runWeighted += paceSgpa * safeCreditsPerSem;
+    runCredits += safeCreditsPerSem;
+    milestones.push({
+      step: i,
+      label: `Sem ${startingSemesterNumber + i - 1}`,
+      projectedCgpa: round2(runWeighted / runCredits),
+      cumulativeCredits: runCredits,
+    });
+  }
+
+  return {
+    targetCgpa: round2(safeTarget),
+    currentCgpa: round2(safeCurrent),
+    completedCredits: Math.round(safeCompleted * 10) / 10,
+    remainingSemesters: safeSemesters,
+    creditsPerSemester: safeCreditsPerSem,
+    totalFutureCredits,
+    requiredAverageSgpa,
+    maxPossibleCgpa,
+    minPassingCgpa,
+    status,
+    headline,
+    detail,
+    coursesPerSemesterEstimate,
+    recommendedGradeMix,
+    recommendedMixSgpa,
+    milestones,
+  };
+}
+
+
 
 
 

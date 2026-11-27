@@ -22,6 +22,7 @@ import {
 } from '../core/caeUpload';
 import type { ErpUserRole, SessionUser, SubjectCaeMark } from '../core/types';
 import type { CaeUploadResponse, ErpDirectCaeAuthInput } from '../lib/api';
+import { PasswordInput } from './PasswordInput';
 
 interface CaeUploadPanelProps {
   user: SessionUser;
@@ -642,13 +643,13 @@ export function CaeUploadPanel({
                     >
                       ERP Password <span className="font-normal text-slate-400">· Never stored</span>
                     </label>
-                    <input
+                    <PasswordInput
                       id="caeDirectErpPass"
-                      type="password"
                       value={erpPassword}
                       onChange={(e) => setErpPassword(e.target.value)}
                       placeholder="Enter ERP portal password"
                       autoComplete="current-password"
+                      toggleLabel="ERP password"
                       className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none"
                     />
                   </div>
@@ -676,12 +677,12 @@ export function CaeUploadPanel({
                       >
                         ERP Access-Token
                       </label>
-                      <input
+                      <PasswordInput
                         id="caeDirectErpToken"
-                        type="password"
                         value={erpToken}
                         onChange={(e) => setErpToken(e.target.value)}
                         placeholder="Paste Access-Token from erp.sathyabama.ac.in (optional)"
+                        toggleLabel="ERP Access-Token"
                         className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-xs font-mono text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none"
                       />
                     </div>

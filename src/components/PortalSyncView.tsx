@@ -27,6 +27,7 @@ import type {
 import { api } from '../lib/api';
 import { formatDateTime } from '../lib/format';
 import type { SectionState } from './OverviewView';
+import { PasswordInput } from './PasswordInput';
 
 export type AutoSyncIntervalMinutes = 0 | 1 | 5 | 15;
 
@@ -685,12 +686,12 @@ export function PortalSyncView({
                   >
                     ERP Password
                   </label>
-                  <input
+                  <PasswordInput
                     id="syncErpPassword"
-                    type="password"
                     value={erpPassword}
                     onChange={(e) => setErpPassword(e.target.value)}
                     placeholder="Auto-exchanged via erp.sathyabama.ac.in"
+                    toggleLabel="ERP password"
                     className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                   />
                   {fieldErrors.erpPassword ? (
@@ -716,15 +717,15 @@ export function PortalSyncView({
                 {showOptionalErpToken ? (
                   <div className="space-y-1.5">
                     <div className="flex items-center gap-2">
-                      <input
+                      <PasswordInput
                         ref={erpTokenInputRef}
                         id="syncErpToken"
-                        type="password"
                         value={erpToken}
                         onChange={(e) => setErpToken(e.target.value)}
                         placeholder="Optional: paste Access-Token or session cookie"
                         aria-label="ERP Access-Token (optional)"
-                        className="flex-1 min-w-0 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+                        toggleLabel="ERP Access-Token"
+                        className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                       />
                       <button
                         type="button"
@@ -806,12 +807,12 @@ export function PortalSyncView({
                     >
                       Moodle LMS Password
                     </label>
-                    <input
+                    <PasswordInput
                       id="syncLmsPassword"
-                      type="password"
                       value={lmsPassword}
                       onChange={(e) => setLmsPassword(e.target.value)}
                       placeholder="Exchanged once via sathyabama.cognibot.in"
+                      toggleLabel="Moodle LMS password"
                       className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                     />
                     {fieldErrors.lmsPassword ? (
@@ -827,12 +828,12 @@ export function PortalSyncView({
                   >
                     Moodle Web-Service Token
                   </label>
-                  <input
+                  <PasswordInput
                     id="syncLmsToken"
-                    type="password"
                     value={lmsToken}
                     onChange={(e) => setLmsToken(e.target.value)}
                     placeholder="Paste Moodle mobile web service key"
+                    toggleLabel="Moodle web-service token"
                     className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
                   />
                   {fieldErrors.lmsToken ? (

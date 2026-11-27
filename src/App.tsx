@@ -3,6 +3,7 @@ import { AppFooter } from './components/AppFooter';
 import { AttendanceView } from './components/AttendanceView';
 import { CommandPalette } from './components/CommandPalette';
 import { DeadlinesView } from './components/DeadlinesView';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { LiveLoginGuideView } from './components/LiveLoginGuideView';
 import { MarksView } from './components/MarksView';
 import { NotificationsView } from './components/NotificationsView';
@@ -609,33 +610,39 @@ export default function App() {
               </div>
             ) : null}
 
-            {activeSection === 'overview' ? (
-              <OverviewView
-                profile={profile}
-                attendance={attendance}
-                timetable={timetable}
-                results={results}
-                deadlines={deadlines}
-                notifications={notifications}
-                completedDeadlineIds={completedDeadlineIds}
-                readNotificationIds={readNotificationIds}
-                attendanceTarget={attendanceTarget}
-                onChangeAttendanceTarget={setAttendanceTarget}
-                onNavigate={setActiveSection}
-                onRetrySection={(sec) => void loadSection(sec, true)}
-              />
-            ) : null}
+            <ErrorBoundary resetKey={activeSection} sectionLabel={activeSection}>
+              {activeSection === 'overview' ? (
+                <OverviewView
+                  user={user}
+                  profile={profile}
+                  attendance={attendance}
+                  timetable={timetable}
+                  results={results}
+                  deadlines={deadlines}
+                  notifications={notifications}
+                  completedDeadlineIds={completedDeadlineIds}
+                  readNotificationIds={readNotificationIds}
+                  attendanceTarget={attendanceTarget}
+                  syncingPortals={syncingPortals}
+                  lastSyncReport={lastSyncReport}
+                  onSyncPortals={() => void handleSyncPortals()}
+                  onChangeAttendanceTarget={setAttendanceTarget}
+                  onNavigate={setActiveSection}
+                  onRetrySection={(sec) => void loadSection(sec, true)}
+                />
+              ) : null}
 
-            {activeSection === 'attendance' ? (
-              <AttendanceView
-                section={attendance}
-                targetPercent={attendanceTarget}
-                endDate={attendanceEndDate}
-                onChangeEndDate={handleChangeAttendanceEndDate}
-                onChangeTarget={setAttendanceTarget}
-                onRetry={() => void loadSection('attendance', true)}
-              />
-            ) : null}
+              {activeSection === 'attendance' ? (
+                <AttendanceView
+                  section={attendance}
+                  timetable={timetable.envelope?.data ?? []}
+                  targetPercent={attendanceTarget}
+                  endDate={attendanceEndDate}
+                  onChangeEndDate={handleChangeAttendanceEndDate}
+                  onChangeTarget={setAttendanceTarget}
+                  onRetry={() => void loadSection('attendance', true)}
+                />
+              ) : null}
 
             {activeSection === 'timetable' ? (
               <TimetableView
@@ -715,16 +722,17 @@ export default function App() {
               />
             ) : null}
 
-            {activeSection === 'setup' ? (
-              <SetupHealthView
-                user={user}
-                erpOutageSimulated={erpOutageSimulated}
-                onToggleErpOutage={handleToggleErpOutage}
-                onNavigate={setActiveSection}
-                onRefreshAll={() => loadAllSections(true)}
-                onSwitchToLiveSignIn={() => void handleSignOut('live')}
-              />
-            ) : null}
+              {activeSection === 'setup' ? (
+                <SetupHealthView
+                  user={user}
+                  erpOutageSimulated={erpOutageSimulated}
+                  onToggleErpOutage={handleToggleErpOutage}
+                  onNavigate={setActiveSection}
+                  onRefreshAll={() => loadAllSections(true)}
+                  onSwitchToLiveSignIn={() => void handleSignOut('live')}
+                />
+              ) : null}
+            </ErrorBoundary>
           </div>
         </main>
         <AppFooter />
