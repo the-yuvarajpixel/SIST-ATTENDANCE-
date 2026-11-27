@@ -5,10 +5,12 @@ import {
   buildDailyAttendanceLog,
   buildWeeklyAttendanceTrend,
   clampAttendanceDateToToday,
+  computeAttendanceAsOfDate,
   computeAttendanceStats,
   computeOverallAttendance,
   getLatestAttendanceDate,
   normalizeAttendanceEndDate,
+  shiftAttendanceDateKey,
   simulateAttendance,
 } from './attendance';
 import {
@@ -789,6 +791,40 @@ test('findNextClass resolves Saturday timetable sessions accurately', () => {
   assert.equal(next.slot.id, 'sat-1');
   assert.equal(next.slot.day, 'Sat');
   assert.equal(next.dayLabel, 'Tomorrow, Sat');
+});
+
+test('computeAttendanceAsOfDate updates subject and overall attendance day-by-day in lockstep with daily log', () => {
+  const subjects: AttendanceSubject[] = [
+    { courseCode: 'SCSA1601', courseName: 'Computer Networks', faculty: 'Dr. A', credits: 4, attended: 20, total: 24, lastUpdated: '2026-11-28' },
+    { courseCode: 'SCSA1604', courseName: 'Cloud Computing', faculty: 'Prof. B', credits: 3, attended: 14, total: 18, lastUpdated: '2026-11-28' },
+  ];
+  const slots: TimetableSlot[] = [
+    { id: '1', day: 'Mon', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1601', courseName: 'Computer Networks', room: 'CS-1', faculty: 'Dr. A', kind: 'Lecture' },
+    { id: '2', day: 'Wed', startTime: '10:00', endTime: '10:50', courseCode: 'SCSA1601', courseName: 'Computer Networks', room: 'CS-1', faculty: 'Dr. A', kind: 'Lecture' },
+    { id: '3', day: 'Fri', startTime: '11:10', endTime: '12:00', courseCode: 'SCSA1601', courseName: 'Computer Networks', room: 'CS-1', faculty: 'Dr. A', kind: 'Lecture' },
+    { id: '4', day: 'Tue', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1604', courseName: 'Cloud Computing', room: 'CS-2', faculty: 'Prof. B', kind: 'Lecture' },
+    { id: '5', day: 'Sat', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1604', courseName: 'Cloud Computing', room: 'CS-2', faculty: 'Prof. B', kind: 'Lecture' },
+  ];
+  // 2026-11-28 is Saturday
+  const satNow = new Date(2026, 10, 28, 12, 0, 0);
+  const satAttendance = computeAttendanceAsOfDate(subjects, slots, '2026-11-28', satNow);
+  const friKey = shiftAttendanceDateKey('2026-11-28', -1, satNow);
+  assert.equal(friKey, '2026-11-27');
+
+  const friAttendance = computeAttendanceAsOfDate(subjects, slots, friKey, satNow);
+  // Stepping back from Saturday to Friday removes Saturday's SCSA1604 class (18 -> 17), while SCSA1601 (no Sat class) stays 24
+  assert.equal(satAttendance[1].total, 18);
+  assert.equal(friAttendance[1].total, 17);
+  assert.equal(friAttendance[0].total, 24);
+  assert.ok(friAttendance[1].lastUpdated <= '2026-11-27');
+
+  // Stepping back from Friday to Thursday removes Friday's SCSA1601 class (24 -> 23)
+  const thuKey = shiftAttendanceDateKey(friKey, -1, satNow);
+  const thuAttendance = computeAttendanceAsOfDate(subjects, slots, thuKey, satNow);
+  assert.equal(thuAttendance[0].total, 23);
+
+  // Shifting forward past today clamps strictly to today
+  assert.equal(shiftAttendanceDateKey('2026-11-28', 5, satNow), '2026-11-28');
 });
 
 

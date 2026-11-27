@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Calendar, CalendarDays, CheckCircle2, Minus, Plus, RefreshCw, RotateCcw, XCircle } from 'lucide-react';
+import { Calendar, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Minus, Plus, RefreshCw, RotateCcw, XCircle } from 'lucide-react';
 import {
   buildDailyAttendanceLog,
   clampAttendanceDateToToday,
@@ -8,6 +8,7 @@ import {
   getLatestAttendanceDate,
   getTodayLocalDateKey,
   normalizeAttendanceEndDate,
+  shiftAttendanceDateKey,
   simulateAttendance,
 } from '../core/attendance';
 import type { AttendanceSubject, TimetableSlot } from '../core/types';
@@ -94,6 +95,26 @@ export function AttendanceView({
       }),
     [subjects, timetable, endDate, targetPercent, effectiveDailySubject]
   );
+
+  // Full-subject daily log for the selected end date so each subject row shows that day's Present/Absent status
+  const selectedEndDayMap = useMemo(() => {
+    const allLog =
+      effectiveDailySubject === 'all'
+        ? dailyLog
+        : buildDailyAttendanceLog(subjects, timetable, {
+            endDate,
+            targetPercent,
+            subjectCode: 'all',
+          });
+    const endDayRecord = allLog.days.find((d) => d.dateKey === endDate) ?? null;
+    const map = new Map<string, { status: 'present' | 'absent'; slotTime?: string }>();
+    if (endDayRecord) {
+      for (const entry of endDayRecord.entries) {
+        map.set(entry.courseCode, { status: entry.status, slotTime: entry.slotTime });
+      }
+    }
+    return { record: endDayRecord, byCode: map };
+  }, [dailyLog, effectiveDailySubject, subjects, timetable, endDate, targetPercent]);
 
   const visibleDailyRecords = useMemo(() => {
     const byStatus =
@@ -233,8 +254,8 @@ export function AttendanceView({
         </div>
 
         {/* End Attendance Date Cutoff Bar */}
-        <div className="pt-4 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-2.5">
+        <div className="pt-4 border-t border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             <label
               htmlFor="attendanceEndDate"
               className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 whitespace-nowrap"
@@ -242,20 +263,44 @@ export function AttendanceView({
               <Calendar className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" aria-hidden="true" />
               End Attendance Date
             </label>
-            <input
-              id="attendanceEndDate"
-              type="date"
-              max={todayKey}
-              value={draftEndDate}
-              onChange={(e) => {
-                const next = e.target.value;
-                setDraftEndDate(next);
-                if (/^\d{4}-\d{2}-\d{2}$/.test(next)) {
-                  applyEndDate(next);
-                }
-              }}
-              className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs font-mono tabular-nums text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
-            />
+
+            <div className="inline-flex items-center rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => applyEndDate(shiftAttendanceDateKey(endDate, -1))}
+                disabled={section.loading}
+                aria-label="Previous day"
+                title="Previous day"
+                className="px-2 py-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-40"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+              <input
+                id="attendanceEndDate"
+                type="date"
+                max={todayKey}
+                value={draftEndDate}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setDraftEndDate(next);
+                  if (/^\d{4}-\d{2}-\d{2}$/.test(next)) {
+                    applyEndDate(next);
+                  }
+                }}
+                className="border-x border-slate-200 dark:border-slate-800 bg-transparent px-2.5 py-1.5 text-xs font-mono tabular-nums text-slate-900 dark:text-slate-100 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => applyEndDate(shiftAttendanceDateKey(endDate, 1))}
+                disabled={section.loading || !isCustomPastDate}
+                aria-label="Next day"
+                title="Next day"
+                className="px-2 py-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed"
+              >
+                <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            </div>
+
             <button
               type="button"
               onClick={() => applyEndDate(draftEndDate)}
@@ -277,7 +322,21 @@ export function AttendanceView({
           </div>
 
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Future dates are locked to today ({formatAttendanceDateDisplay(todayKey)}).
+            {selectedEndDayMap.record ? (
+              <span>
+                <strong className="font-medium text-slate-700 dark:text-slate-200">
+                  {selectedEndDayMap.record.dayName}, {selectedEndDayMap.record.shortDate}:
+                </strong>{' '}
+                <span className="font-mono tabular-nums">
+                  {selectedEndDayMap.record.presentCount}/{selectedEndDayMap.record.totalCount} present (
+                  {selectedEndDayMap.record.dailyPercentage.toFixed(1)}%)
+                </span>
+              </span>
+            ) : (
+              <span>
+                Day-by-day updates automatically roll forward each day (max {formatAttendanceDateDisplay(todayKey)}).
+              </span>
+            )}
           </p>
         </div>
       </section>
@@ -342,6 +401,25 @@ export function AttendanceView({
                           <span>{subject.faculty}</span>
                           <span aria-hidden="true"> · </span>
                           <span className="font-mono tabular-nums">Till {cappedDate.displayDate}</span>
+                          {(() => {
+                            const dayEntry = selectedEndDayMap.byCode.get(subject.courseCode);
+                            if (!dayEntry) return null;
+                            return (
+                              <>
+                                <span aria-hidden="true"> · </span>
+                                <span
+                                  className={`font-medium ${
+                                    dayEntry.status === 'present'
+                                      ? 'text-emerald-700 dark:text-emerald-400'
+                                      : 'text-red-700 dark:text-red-400'
+                                  }`}
+                                >
+                                  {isCustomPastDate ? activeCutoffDisplay : 'End day'}:{' '}
+                                  {dayEntry.status === 'present' ? 'Present' : 'Absent'}
+                                </span>
+                              </>
+                            );
+                          })()}
                         </p>
                         <div className="mt-2 h-1.5 w-full max-w-[200px] overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
                           <div
@@ -535,6 +613,19 @@ export function AttendanceView({
                             </span>
                           ) : null}
                         </span>
+                        {day.dateKey === endDate ? (
+                          <span className="text-[11px] font-medium text-blue-700 dark:text-blue-400">
+                            · Active end date
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => applyEndDate(day.dateKey)}
+                            className="text-[11px] font-medium text-blue-700 dark:text-blue-400 hover:underline cursor-pointer"
+                          >
+                            Set as end date
+                          </button>
+                        )}
                       </div>
 
                       <div className="flex flex-wrap items-center gap-4 text-xs font-mono tabular-nums">

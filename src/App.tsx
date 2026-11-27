@@ -418,6 +418,30 @@ export default function App() {
     [loadSection]
   );
 
+  // Automatically advance the attendance end date day-by-day when a new calendar day starts
+  const lastTrackedTodayRef = useRef<string>(getTodayLocalDateKey());
+  useEffect(() => {
+    if (!user) return;
+    const checkDayRollover = () => {
+      const currentToday = getTodayLocalDateKey();
+      if (currentToday !== lastTrackedTodayRef.current) {
+        const previousToday = lastTrackedTodayRef.current;
+        lastTrackedTodayRef.current = currentToday;
+        if (attendanceEndDateRef.current === previousToday) {
+          attendanceEndDateRef.current = currentToday;
+          setAttendanceEndDate(currentToday);
+          void loadSection('attendance', true, currentToday);
+        }
+      }
+    };
+    const intervalId = window.setInterval(checkDayRollover, 60_000);
+    document.addEventListener('visibilitychange', checkDayRollover);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', checkDayRollover);
+    };
+  }, [user, loadSection]);
+
   // Automatic background sync across College ERP, Moodle LMS, and all 6 sections
   useEffect(() => {
     if (!user || autoSyncMinutes === 0) {

@@ -1,4 +1,4 @@
-import { getTodayLocalDateKey, normalizeAttendanceEndDate } from '../core/attendance';
+import { computeAttendanceAsOfDate, getTodayLocalDateKey } from '../core/attendance';
 import { deduplicateDeadlines } from '../core/schedule';
 import type {
   AttendanceSubject,
@@ -24,22 +24,6 @@ function formatIsoDate(daysFromNow: number): string {
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
-}
-
-function countWeekdaysBetween(startIso: string, endIso: string): number {
-  const [sy, sm, sd] = startIso.split('-').map(Number);
-  const [ey, em, ed] = endIso.split('-').map(Number);
-  const start = new Date(sy, sm - 1, sd);
-  const end = new Date(ey, em - 1, ed);
-  if (end.getTime() <= start.getTime()) return 0;
-  let count = 0;
-  const cursor = new Date(start.getTime());
-  while (cursor.getTime() < end.getTime()) {
-    cursor.setDate(cursor.getDate() + 1);
-    const day = cursor.getDay();
-    if (day !== 0 && day !== 6) count += 1;
-  }
-  return count;
 }
 
 export function buildMockProfile(
@@ -83,116 +67,65 @@ export function buildMockProfile(
 export function buildMockAttendance(endDateIso?: string): AttendanceSubject[] {
   const today = getTodayLocalDateKey();
   const yesterday = formatIsoDate(-1);
-  const effectiveEnd = normalizeAttendanceEndDate(endDateIso);
 
-  const base: {
-    subject: AttendanceSubject;
-    sessionsPerWeek: number;
-    recentAttendanceBias: number;
-  }[] = [
+  const baseSubjects: AttendanceSubject[] = [
     {
-      subject: {
-        courseCode: 'SCSA1601',
-        courseName: 'Computer Networks',
-        faculty: 'Dr. S. Priya Dharshini',
-        credits: 4,
-        attended: 35,
-        total: 40,
-        lastUpdated: today,
-      },
-      sessionsPerWeek: 4,
-      recentAttendanceBias: 0.9,
+      courseCode: 'SCSA1601',
+      courseName: 'Computer Networks',
+      faculty: 'Dr. S. Priya Dharshini',
+      credits: 4,
+      attended: 35,
+      total: 40,
+      lastUpdated: today,
     },
     {
-      subject: {
-        courseCode: 'SCSA1602',
-        courseName: 'Compiler Design',
-        faculty: 'Prof. K. Karthikeyan',
-        credits: 4,
-        attended: 25,
-        total: 36,
-        lastUpdated: today,
-      },
-      sessionsPerWeek: 4,
-      recentAttendanceBias: 0.65,
+      courseCode: 'SCSA1602',
+      courseName: 'Compiler Design',
+      faculty: 'Prof. K. Karthikeyan',
+      credits: 4,
+      attended: 25,
+      total: 36,
+      lastUpdated: today,
     },
     {
-      subject: {
-        courseCode: 'SCSA1603',
-        courseName: 'Machine Learning',
-        faculty: 'Dr. M. Vigneshwaran',
-        credits: 4,
-        attended: 31,
-        total: 34,
-        lastUpdated: today,
-      },
-      sessionsPerWeek: 4,
-      recentAttendanceBias: 0.94,
+      courseCode: 'SCSA1603',
+      courseName: 'Machine Learning',
+      faculty: 'Dr. M. Vigneshwaran',
+      credits: 4,
+      attended: 31,
+      total: 34,
+      lastUpdated: today,
     },
     {
-      subject: {
-        courseCode: 'SCSA1604',
-        courseName: 'Cloud Computing Architecture',
-        faculty: 'Prof. N. Anitha',
-        credits: 3,
-        attended: 24,
-        total: 31,
-        lastUpdated: yesterday,
-      },
-      sessionsPerWeek: 3,
-      recentAttendanceBias: 0.78,
+      courseCode: 'SCSA1604',
+      courseName: 'Cloud Computing Architecture',
+      faculty: 'Prof. N. Anitha',
+      credits: 3,
+      attended: 24,
+      total: 31,
+      lastUpdated: yesterday,
     },
     {
-      subject: {
-        courseCode: 'SCSA2601',
-        courseName: 'Networks & Security Lab',
-        faculty: 'Dr. S. Priya Dharshini',
-        credits: 2,
-        attended: 17,
-        total: 19,
-        lastUpdated: yesterday,
-      },
-      sessionsPerWeek: 2,
-      recentAttendanceBias: 0.9,
+      courseCode: 'SCSA2601',
+      courseName: 'Networks & Security Lab',
+      faculty: 'Dr. S. Priya Dharshini',
+      credits: 2,
+      attended: 17,
+      total: 19,
+      lastUpdated: yesterday,
     },
     {
-      subject: {
-        courseCode: 'SCSA1605',
-        courseName: 'Software Engineering & Agile',
-        faculty: 'Prof. V. Deepika',
-        credits: 3,
-        attended: 21,
-        total: 29,
-        lastUpdated: today,
-      },
-      sessionsPerWeek: 3,
-      recentAttendanceBias: 0.72,
+      courseCode: 'SCSA1605',
+      courseName: 'Software Engineering & Agile',
+      faculty: 'Prof. V. Deepika',
+      credits: 3,
+      attended: 21,
+      total: 29,
+      lastUpdated: today,
     },
   ];
 
-  if (effectiveEnd === today) {
-    return base.map((item) => item.subject);
-  }
-
-  const weekdaysBack = countWeekdaysBetween(effectiveEnd, today);
-  return base.map(({ subject, sessionsPerWeek, recentAttendanceBias }) => {
-    const removedSessions = Math.min(
-      Math.max(0, subject.total - 4),
-      Math.round((weekdaysBack * sessionsPerWeek) / 5)
-    );
-    const nextTotal = Math.max(1, subject.total - removedSessions);
-    const removedAttended = Math.round(removedSessions * recentAttendanceBias);
-    const nextAttended = Math.max(0, Math.min(nextTotal, subject.attended - removedAttended));
-    const cappedLastUpdated =
-      subject.lastUpdated > effectiveEnd ? effectiveEnd : subject.lastUpdated;
-
-    return {
-      ...subject,
-      attended: nextAttended,
-      total: nextTotal,
-      lastUpdated: cappedLastUpdated,
-    };
-  });
+  return computeAttendanceAsOfDate(baseSubjects, buildMockTimetable(), endDateIso);
 }
 
 export function buildMockTimetable(): TimetableSlot[] {

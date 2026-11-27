@@ -1103,6 +1103,95 @@ export function buildDailyAttendanceLog(
   };
 }
 
+/**
+ * Shifts a YYYY-MM-DD local date key by `deltaDays` (negative for past, positive for forward)
+ * while strictly clamping the result to <= today.
+ */
+export function shiftAttendanceDateKey(
+  dateKey: string,
+  deltaDays: number,
+  now = new Date()
+): string {
+  const normalized = normalizeAttendanceEndDate(dateKey, now);
+  const parsed = parseDateAsLocalMidnight(normalized);
+  if (!parsed) return getTodayLocalDateKey(now);
+  parsed.setDate(parsed.getDate() + Math.trunc(deltaDays));
+  return normalizeAttendanceEndDate(toLocalDateKey(parsed), now);
+}
 
+/**
+ * Recomputes exact per-subject attendance counts as of a chosen end date (<= today)
+ * by slicing the deterministic Mon–Sat daily attendance ledger at `endDateIso`.
+ * Ensures subject attendance, overall attendance, and the day-by-day log stay in exact lockstep.
+ */
+export function computeAttendanceAsOfDate(
+  subjects: AttendanceSubject[],
+  timetable: TimetableSlot[],
+  endDateIso?: string,
+  now = new Date()
+): AttendanceSubject[] {
+  const todayKey = getTodayLocalDateKey(now);
+  const effectiveEnd = normalizeAttendanceEndDate(endDateIso, now);
 
+  if (subjects.length === 0) return [];
 
+  const fullLedger = buildDailyAttendanceLog(subjects, timetable, {
+    endDate: todayKey,
+    now,
+  });
+
+  if (effectiveEnd === todayKey) {
+    // Reconcile lastUpdated to the latest session date <= today for each subject
+    const latestSessionByCode = new Map<string, string>();
+    for (const day of fullLedger.days) {
+      for (const entry of day.entries) {
+        if (!latestSessionByCode.has(entry.courseCode)) {
+          latestSessionByCode.set(entry.courseCode, day.dateKey);
+        }
+      }
+    }
+    return subjects.map((subject) => ({
+      ...subject,
+      lastUpdated: latestSessionByCode.get(subject.courseCode) ?? clampAttendanceDateToToday(subject.lastUpdated, now).dateKey,
+    }));
+  }
+
+  const perSubject = new Map<string, { attended: number; total: number; latestDate: string | null }>();
+  for (const subject of subjects) {
+    perSubject.set(subject.courseCode, { attended: 0, total: 0, latestDate: null });
+  }
+
+  // fullLedger.days is newest-first; accumulate all sessions on or before effectiveEnd
+  for (const day of fullLedger.days) {
+    if (day.dateKey > effectiveEnd) continue;
+    for (const entry of day.entries) {
+      const acc = perSubject.get(entry.courseCode);
+      if (!acc) continue;
+      acc.total += 1;
+      if (entry.status === 'present') {
+        acc.attended += 1;
+      }
+      if (!acc.latestDate || day.dateKey > acc.latestDate) {
+        acc.latestDate = day.dateKey;
+      }
+    }
+  }
+
+  return subjects.map((subject) => {
+    const acc = perSubject.get(subject.courseCode);
+    if (!acc || acc.total === 0) {
+      return {
+        ...subject,
+        attended: 0,
+        total: 0,
+        lastUpdated: effectiveEnd,
+      };
+    }
+    return {
+      ...subject,
+      attended: acc.attended,
+      total: acc.total,
+      lastUpdated: acc.latestDate ?? effectiveEnd,
+    };
+  });
+}
