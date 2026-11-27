@@ -167,11 +167,15 @@ test('ERP parsers normalize flexible ERP payload shapes into schema-valid models
   const timetable = parseErpTimetable({
     schedule: [
       { weekday: 'Monday', from: '9:00', to: '9:50', code: 'SCS1302', subject: 'Computer Networks', venue: 'Block 2', type: 'Practical' },
+      { weekday: 'Saturday', from: '10:00', to: '10:50', code: 'SCS1305', subject: 'Software Engineering', venue: 'CS-204', type: 'Tutorial' },
     ],
   });
   assert.equal(timetable[0].day, 'Mon');
   assert.equal(timetable[0].startTime, '09:00');
   assert.equal(timetable[0].kind, 'Lab');
+  assert.equal(timetable[1].day, 'Sat');
+  assert.equal(timetable[1].startTime, '10:00');
+  assert.equal(timetable[1].kind, 'Tutorial');
 
   const results = parseErpResults({
     semesters: [

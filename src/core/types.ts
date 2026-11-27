@@ -48,7 +48,7 @@ export interface AttendanceStats {
   verdict: string;
 }
 
-export type Weekday = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri';
+export type Weekday = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat';
 
 export interface TimetableSlot {
   id: string;

@@ -5,10 +5,19 @@ import type { AttendanceSubject, TimetableSlot, Weekday } from '../core/types';
 import type { SectionState } from './OverviewView';
 import { SectionError, SectionSkeleton, StaleBanner } from './SectionNotice';
 
-const DAYS: Weekday[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+const DAYS: Weekday[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+const FULL_DAY_NAMES: Record<Weekday, string> = {
+  Mon: 'Monday',
+  Tue: 'Tuesday',
+  Wed: 'Wednesday',
+  Thu: 'Thursday',
+  Fri: 'Friday',
+  Sat: 'Saturday',
+};
 
 function getDefaultDay(): Weekday {
-  const map: Record<number, Weekday> = { 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri' };
+  const map: Record<number, Weekday> = { 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat' };
   return map[new Date().getDay()] ?? 'Mon';
 }
 
@@ -99,13 +108,18 @@ export function TimetableView({
               >
                 <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
                   <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-slate-50">
-                    {day}
+                    {FULL_DAY_NAMES[day]}
                   </h3>
                   <span className="font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400">
-                    {daySlots.length} sessions
+                    {daySlots.length} {daySlots.length === 1 ? 'session' : 'sessions'}
                   </span>
                 </div>
 
+                {daySlots.length === 0 ? (
+                  <div className="px-5 py-6 text-xs text-slate-500 dark:text-slate-400">
+                    No classes scheduled for {FULL_DAY_NAMES[day]}.
+                  </div>
+                ) : (
                 <div className="divide-y divide-slate-200 dark:divide-slate-800">
                   {daySlots.map((slot) => {
                     const subj = attendanceMap.get(slot.courseCode);
@@ -168,6 +182,7 @@ export function TimetableView({
                     );
                   })}
                 </div>
+                )}
               </section>
             );
           })}

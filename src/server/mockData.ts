@@ -226,6 +226,11 @@ export function buildMockTimetable(): TimetableSlot[] {
     { id: 'fri-2', day: 'Fri', startTime: '10:00', endTime: '10:50', courseCode: 'SCSA1602', courseName: 'Compiler Design', room: 'CS-204', faculty: 'Prof. K. Karthikeyan', kind: 'Lecture' },
     { id: 'fri-3', day: 'Fri', startTime: '11:10', endTime: '12:00', courseCode: 'SCSA1601', courseName: 'Computer Networks', room: 'CS-204', faculty: 'Dr. S. Priya Dharshini', kind: 'Lecture' },
     { id: 'fri-4', day: 'Fri', startTime: '14:00', endTime: '14:50', courseCode: 'SCSA1603', courseName: 'Machine Learning', room: 'CS-301', faculty: 'Dr. M. Vigneshwaran', kind: 'Tutorial' },
+
+    // Saturday
+    { id: 'sat-1', day: 'Sat', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1604', courseName: 'Cloud Computing Architecture', room: 'CS-206', faculty: 'Prof. N. Anitha', kind: 'Lecture' },
+    { id: 'sat-2', day: 'Sat', startTime: '10:00', endTime: '10:50', courseCode: 'SCSA1605', courseName: 'Software Engineering & Agile', room: 'CS-204', faculty: 'Prof. V. Deepika', kind: 'Tutorial' },
+    { id: 'sat-3', day: 'Sat', startTime: '11:10', endTime: '12:50', courseCode: 'SCSA2601', courseName: 'Networks & Security Lab', room: 'Lab-04', faculty: 'Dr. S. Priya Dharshini', kind: 'Lab' },
   ];
 }
 

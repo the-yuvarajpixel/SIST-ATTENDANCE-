@@ -25,7 +25,7 @@ export class SchemaValidationError extends Error {
   }
 }
 
-const VALID_DAYS = new Set<Weekday>(['Mon', 'Tue', 'Wed', 'Thu', 'Fri']);
+const VALID_DAYS = new Set<Weekday>(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
 const VALID_GRADES = new Set<GradeLetter>(['O', 'A+', 'A', 'B+', 'B', 'C', 'RA']);
 const VALID_CAE_STANDINGS = new Set<CaeStanding>(['strong', 'on-track', 'needs-improvement', 'pending']);
 const VALID_ERP_ROLES = new Set<ErpUserRole>(['student', 'staff', 'new-admission', 'parent']);
@@ -139,7 +139,7 @@ export function validateTimetable(input: unknown): TimetableSlot[] {
     }
     const day = item.day as Weekday;
     if (!VALID_DAYS.has(day)) {
-      issues.push(`[${idx}].day must be Mon..Fri`);
+      issues.push(`[${idx}].day must be Mon..Sat`);
     }
     const startTime = assertNonEmptyString(item.startTime, `[${idx}].startTime`, issues);
     const endTime = assertNonEmptyString(item.endTime, `[${idx}].endTime`, issues);

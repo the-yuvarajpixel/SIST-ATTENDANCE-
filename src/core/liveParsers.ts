@@ -781,6 +781,9 @@ const DAY_ALIASES: Record<string, Weekday> = {
   '5': 'Fri',
   fri: 'Fri',
   friday: 'Fri',
+  '6': 'Sat',
+  sat: 'Sat',
+  saturday: 'Sat',
 };
 
 function normalizeHHMM(input: string, fallback: string): string {

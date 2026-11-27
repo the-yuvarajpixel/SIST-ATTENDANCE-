@@ -8,7 +8,7 @@ const JS_DAY_TO_WEEKDAY: Record<number, Weekday | null> = {
   3: 'Wed',
   4: 'Thu',
   5: 'Fri',
-  6: null, // Sat
+  6: 'Sat',
 };
 
 function parseMinutes(hhmm: string): number {

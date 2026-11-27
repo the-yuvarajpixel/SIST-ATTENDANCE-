@@ -894,33 +894,37 @@ export function buildDailyAttendanceLog(
     };
   }
 
-  // Map each course to the weekdays (1=Mon..5=Fri) & time slot it meets on from timetable
+  // Map each course to the weekdays (1=Mon..6=Sat) & time slot it meets on from timetable
   const weekdayToJsDay: Record<TimetableSlot['day'], number> = {
     Mon: 1,
     Tue: 2,
     Wed: 3,
     Thu: 4,
     Fri: 5,
+    Sat: 6,
   };
   const courseWeekdaySlots = new Map<string, Array<{ dayIndex: number; time: string }>>();
+  let hasSaturdayClasses = false;
   for (const slot of timetable) {
     const code = slot.courseCode.trim().toUpperCase();
     const list = courseWeekdaySlots.get(code) ?? [];
     const jsDay = weekdayToJsDay[slot.day];
     if (jsDay) {
+      if (jsDay === 6) hasSaturdayClasses = true;
       list.push({ dayIndex: jsDay, time: `${slot.startTime}–${slot.endTime}` });
       courseWeekdaySlots.set(code, list);
     }
   }
 
-  // Generate candidate working days (Mon–Fri) walking backwards from cutoffDate
+  // Generate candidate working days (Mon–Fri, plus Sat when Saturday classes are scheduled) walking backwards from cutoffDate
   const maxSubjectTotal = Math.max(...scopedSubjects.map((s) => Math.max(0, s.total)), 1);
   const workingDaysBackwards: Date[] = [];
   const cursor = new Date(cutoffDate);
   const maxWorkingDays = Math.min(95, Math.max(35, maxSubjectTotal * 2 + 12));
+  const maxWeekdayDow = hasSaturdayClasses ? 6 : 5;
   while (workingDaysBackwards.length < maxWorkingDays) {
     const dow = cursor.getDay();
-    if (dow >= 1 && dow <= 5) {
+    if (dow >= 1 && dow <= maxWeekdayDow) {
       workingDaysBackwards.push(new Date(cursor));
     }
     cursor.setDate(cursor.getDate() - 1);

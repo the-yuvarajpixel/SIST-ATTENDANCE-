@@ -778,6 +778,19 @@ test('buildDailyAttendanceLog conserves exact subject attendance totals and clam
   assert.equal(osOnly.days[0].cumulativeTotal, 20);
 });
 
+test('findNextClass resolves Saturday timetable sessions accurately', () => {
+  const slots: TimetableSlot[] = [
+    { id: 'fri-1', day: 'Fri', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1601', courseName: 'Computer Networks', room: 'CS-204', faculty: 'Dr. A', kind: 'Lecture' },
+    { id: 'sat-1', day: 'Sat', startTime: '09:00', endTime: '09:50', courseCode: 'SCSA1604', courseName: 'Cloud Computing Architecture', room: 'CS-206', faculty: 'Prof. N. Anitha', kind: 'Lecture' },
+  ];
+  const fridayAfternoon = new Date(2026, 10, 27, 15, 0, 0);
+  const next = findNextClass(slots, [], fridayAfternoon, 75);
+  assert.ok(next);
+  assert.equal(next.slot.id, 'sat-1');
+  assert.equal(next.slot.day, 'Sat');
+  assert.equal(next.dayLabel, 'Tomorrow, Sat');
+});
+
 
 
 
