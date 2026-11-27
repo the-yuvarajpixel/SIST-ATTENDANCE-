@@ -1,9 +1,12 @@
-import { useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
+import { useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent } from 'react';
 import {
   AlertCircle,
+  Check,
   CheckCircle2,
+  ClipboardPaste,
   CloudDownload,
   CloudUpload,
+  Copy,
   Download,
   ExternalLink,
   FileSpreadsheet,
@@ -20,6 +23,11 @@ import {
   buildNormalizedCaeMark,
   parseCaeMarksText,
 } from '../core/caeUpload';
+import {
+  ERP_CONSOLE_COPY_SNIPPET,
+  extractErpAccessToken,
+  formatExtractedTokenSummary,
+} from '../core/erpTokenHelper';
 import type { ErpUserRole, SessionUser, SubjectCaeMark } from '../core/types';
 import type { CaeUploadResponse, ErpDirectCaeAuthInput } from '../lib/api';
 import { PasswordInput } from './PasswordInput';
@@ -125,6 +133,8 @@ export function CaeUploadPanel({
   const [erpToken, setErpToken] = useState<string>('');
   const [showTokenFallback, setShowTokenFallback] = useState<boolean>(false);
   const [showReauthForm, setShowReauthForm] = useState<boolean>(!isLiveErpConnected);
+  const [copiedSnippet, setCopiedSnippet] = useState<boolean>(false);
+  const [tokenNotice, setTokenNotice] = useState<string | null>(null);
 
   const [dragActive, setDragActive] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
@@ -188,9 +198,11 @@ export function CaeUploadPanel({
         ? []
         : (parsedTextResult?.errors ?? []);
 
-  function buildOptionalErpAuth(): ErpDirectCaeAuthInput | undefined {
-    const trimmedToken = erpToken.trim();
-    const trimmedReg = erpRegNo.trim();
+  function buildOptionalErpAuth(overrideToken?: string, overrideRegNo?: string): ErpDirectCaeAuthInput | undefined {
+    const rawTok = overrideToken ?? erpToken;
+    const extracted = extractErpAccessToken(rawTok);
+    const trimmedToken = extracted.token ?? rawTok.trim();
+    const trimmedReg = (overrideRegNo ?? erpRegNo).trim() || extracted.registerNumber || '';
     const hasInlineCreds = Boolean(trimmedToken || erpPassword);
     if (!hasInlineCreds) {
       return currentSemester ? { semester: currentSemester } : undefined;
@@ -202,6 +214,82 @@ export function CaeUploadPanel({
       ...(trimmedToken ? { erpToken: trimmedToken } : { erpPassword }),
       ...(currentSemester ? { semester: currentSemester } : {}),
     };
+  }
+
+  async function handleCopyTokenSnippet() {
+    setTokenNotice(null);
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(ERP_CONSOLE_COPY_SNIPPET);
+        setCopiedSnippet(true);
+        setTokenNotice('Copied 1-line command. Run it in erp.sathyabama.ac.in Console (F12), then click Paste & Pull CAE.');
+        window.setTimeout(() => setCopiedSnippet(false), 3000);
+        return;
+      }
+    } catch {
+      // Fallback text below
+    }
+    setTokenNotice(`Run in erp.sathyabama.ac.in Console (F12): ${ERP_CONSOLE_COPY_SNIPPET}`);
+  }
+
+  async function pullWithExtractedToken(rawInput: string) {
+    const extracted = extractErpAccessToken(rawInput);
+    if (!extracted.token) {
+      setTokenNotice('No valid ERP Access-Token found. Sign in on erp.sathyabama.ac.in and run the 1-line command first.');
+      return;
+    }
+    setErpToken(extracted.token);
+    setShowTokenFallback(true);
+    if (extracted.registerNumber && !erpRegNo.trim()) {
+      setErpRegNo(extracted.registerNumber);
+    }
+    setTokenNotice(`${formatExtractedTokenSummary(extracted)} — pulling CAE marks from ERP...`);
+    setSubmitError(null);
+    setSubmitSuccess(null);
+    setSubmitWarning(null);
+    setPullingErp(true);
+    try {
+      const response = await onPullFromErp(
+        uploadMode,
+        buildOptionalErpAuth(extracted.token, extracted.registerNumber ?? erpRegNo)
+      );
+      setErpPassword('');
+      setShowReauthForm(false);
+      setTokenNotice(null);
+      setSubmitSuccess(
+        response.erpSync?.message ??
+          'Imported live Continuous Assessment (CAE) marks directly from erp.sathyabama.ac.in.'
+      );
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Unable to pull CAE marks directly from College ERP.');
+      setTokenNotice(null);
+    } finally {
+      setPullingErp(false);
+    }
+  }
+
+  async function handlePasteAndPullFromErp() {
+    setTokenNotice(null);
+    if (!navigator.clipboard?.readText) {
+      setTokenNotice('Clipboard read is unavailable — press Ctrl+V / Cmd+V in the token box to auto-pull.');
+      return;
+    }
+    try {
+      const text = await navigator.clipboard.readText();
+      await pullWithExtractedToken(text);
+    } catch {
+      setTokenNotice('Allow clipboard permission or press Ctrl+V / Cmd+V in the token box.');
+    }
+  }
+
+  function handleErpTokenPaste(e: ClipboardEvent<HTMLInputElement>) {
+    const pasted = e.clipboardData?.getData('text');
+    if (!pasted) return;
+    const extracted = extractErpAccessToken(pasted);
+    if (extracted.token) {
+      e.preventDefault();
+      void pullWithExtractedToken(pasted);
+    }
   }
 
   async function readUploadedFile(file: File) {
@@ -305,7 +393,11 @@ export function CaeUploadPanel({
           'Imported live Continuous Assessment (CAE) marks directly from erp.sathyabama.ac.in.'
       );
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : 'Unable to pull CAE marks directly from College ERP.');
+      const eObj = err as Error & { code?: string };
+      if (eObj.code === 'erp_browser_login_required') {
+        setShowTokenFallback(true);
+      }
+      setSubmitError(eObj.message || 'Unable to pull CAE marks directly from College ERP.');
     } finally {
       setPullingErp(false);
     }
@@ -657,36 +749,64 @@ export function CaeUploadPanel({
                   </div>
                 </div>
 
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => setShowTokenFallback((prev) => !prev)}
-                    className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 cursor-pointer"
-                  >
-                    <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span>
-                      {showTokenFallback
-                        ? 'Hide ERP Access-Token field'
-                        : 'Or paste ERP Access-Token manually (optional OTP fallback)'}
-                    </span>
-                  </button>
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowTokenFallback((prev) => !prev)}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 cursor-pointer"
+                    >
+                      <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>
+                        {showTokenFallback
+                          ? 'Hide Instant Access-Token Auto-Sync'
+                          : 'Instant Access-Token Auto-Sync (if ERP asks for browser verification)'}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowTokenFallback(true);
+                        void handleCopyTokenSnippet();
+                      }}
+                      className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 dark:text-blue-400 hover:underline cursor-pointer"
+                    >
+                      {copiedSnippet ? <Check className="h-3 w-3" aria-hidden="true" /> : <Copy className="h-3 w-3" aria-hidden="true" />}
+                      {copiedSnippet ? 'Copied command' : 'Copy 1-line command'}
+                    </button>
+                  </div>
 
                   {showTokenFallback ? (
-                    <div className="mt-2">
-                      <label
-                        htmlFor="caeDirectErpToken"
-                        className="sr-only"
-                      >
-                        ERP Access-Token
-                      </label>
-                      <PasswordInput
-                        id="caeDirectErpToken"
-                        value={erpToken}
-                        onChange={(e) => setErpToken(e.target.value)}
-                        placeholder="Paste Access-Token from erp.sathyabama.ac.in (optional)"
-                        toggleLabel="ERP Access-Token"
-                        className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-xs font-mono text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none"
-                      />
+                    <div className="space-y-1.5">
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                        <label
+                          htmlFor="caeDirectErpToken"
+                          className="sr-only"
+                        >
+                          ERP Access-Token
+                        </label>
+                        <PasswordInput
+                          id="caeDirectErpToken"
+                          value={erpToken}
+                          onChange={(e) => setErpToken(e.target.value)}
+                          onPaste={handleErpTokenPaste}
+                          placeholder="Paste Access-Token, header, JSON, or cURL — auto-pulls CAE marks"
+                          toggleLabel="ERP Access-Token"
+                          className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-xs font-mono text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void handlePasteAndPullFromErp()}
+                          className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3 py-2 text-xs font-medium text-white transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+                        >
+                          <ClipboardPaste className="h-3.5 w-3.5" aria-hidden="true" />
+                          Paste &amp; Pull CAE
+                        </button>
+                      </div>
+                      {tokenNotice ? (
+                        <p className="text-[11px] text-blue-700 dark:text-blue-400 font-medium">{tokenNotice}</p>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

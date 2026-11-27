@@ -83,7 +83,7 @@ test('exchangeErpCredentialsForToken posts JSON credentials with official origin
 
   assert.equal(result.token, 'eyJhbGciOiJIUzI1NiJ9.erp_auto_token');
   assert.equal(result.studentName, 'Kavya Nair');
-  assert.equal(capturedUrl, 'https://erp.sathyabama.ac.in/erp/api/v1.0/MasterStudent/login_sec');
+  assert.equal(capturedUrl, 'https://erp.sathyabama.ac.in/erp/api/v1.0/MasterStudent/login_sec1');
   assert.equal(capturedInit?.method, 'POST');
   assert.equal(capturedInit?.redirect, 'error');
   const sentHeaders = (capturedInit?.headers ?? {}) as Record<string, string>;

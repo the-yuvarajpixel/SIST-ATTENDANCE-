@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  ERP_CONSOLE_COPY_SNIPPET,
+  extractErpAccessToken,
+  formatExtractedTokenSummary,
+} from './erpTokenHelper';
+import {
   analyzeAttendanceInsights,
   buildDailyAttendanceLog,
   buildWeeklyAttendanceTrend,
@@ -894,8 +899,55 @@ test('attendanceSnapshots seeds 30-day daily history, preserves live snapshots, 
   assert.equal(singleSubjectSummary.points.length, window30.length);
 });
 
+test('extractErpAccessToken extracts tokens from raw JWT, quoted strings, headers, JSON, and DevTools cURL while inferring RegisterNumber', () => {
+  assert.equal(ERP_CONSOLE_COPY_SNIPPET, "copy(localStorage.getItem('Access-Token'))");
 
+  const payload = Buffer.from(
+    JSON.stringify({ StudentId: 7742, RegisterNumber: '42110482', StudentName: 'Kavya Nair' })
+  ).toString('base64url');
+  const jwt = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${payload}.signature_part_123456`;
 
+  // 1. Raw quoted JWT
+  const fromQuoted = extractErpAccessToken(`"${jwt}"`);
+  assert.equal(fromQuoted.token, jwt);
+  assert.equal(fromQuoted.format, 'jwt');
+  assert.equal(fromQuoted.registerNumber, '42110482');
+  assert.equal(fromQuoted.studentName, 'Kavya Nair');
+  assert.match(formatExtractedTokenSummary(fromQuoted), /42110482/);
 
+  // 2. HTTP header format (Access-Token and Authorization: Bearer)
+  const fromHeader = extractErpAccessToken(`Access-Token: ${jwt}`);
+  assert.equal(fromHeader.token, jwt);
+  assert.equal(fromHeader.format, 'header');
+  assert.equal(fromHeader.registerNumber, '42110482');
 
+  const fromBearer = extractErpAccessToken(`Authorization: Bearer ${jwt}`);
+  assert.equal(fromBearer.token, jwt);
+  assert.equal(fromBearer.format, 'header');
 
+  // 3. JSON login payload / storage object
+  const fromJson = extractErpAccessToken(
+    JSON.stringify({ status: 1, responseData: { login: { accessToken: jwt } } })
+  );
+  assert.equal(fromJson.token, jwt);
+  assert.equal(fromJson.format, 'json');
+  assert.equal(fromJson.registerNumber, '42110482');
+
+  // 4. DevTools "Copy as cURL" command
+  const curlCmd = `curl 'https://erp.sathyabama.ac.in/erp/api/v1.0/MasterStudent/view' -H 'accept: application/json' -H 'authorization: Bearer ${jwt}'`;
+  const fromCurl = extractErpAccessToken(curlCmd);
+  assert.equal(fromCurl.token, jwt);
+  assert.equal(fromCurl.format, 'curl');
+  assert.equal(fromCurl.registerNumber, '42110482');
+
+  // 5. Session cookie string
+  const fromCookie = extractErpAccessToken('PHPSESSID=abc123456789xyz');
+  assert.equal(fromCookie.token, 'PHPSESSID=abc123456789xyz');
+  assert.equal(fromCookie.format, 'raw');
+
+  // 6. Rejects empty, literal "null", and short non-tokens
+  assert.equal(extractErpAccessToken('').token, null);
+  assert.equal(extractErpAccessToken('null').token, null);
+  assert.equal(extractErpAccessToken('undefined').token, null);
+  assert.equal(extractErpAccessToken('short').token, null);
+});

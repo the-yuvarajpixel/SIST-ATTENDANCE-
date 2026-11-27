@@ -42,7 +42,7 @@ const DEFAULT_TIMEOUT_MS = 8_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MB cap per upstream JSON response
 
 const DEFAULT_ERP_PATHS = {
-  login: '/erp/api/v1.0/MasterStudent/login_sec',
+  login: '/erp/api/v1.0/MasterStudent/login_sec1',
   staffLogin: '/erp/api/v1.0/Staff/login',
   admissionLogin: '/erp/api/v1.0/QuickAdmission/login',
   parentLogin: '/erp/api/v1.0/Parent/login_erp_p_new',
@@ -707,7 +707,7 @@ export async function exchangeErpCredentialsForToken(
     );
   }
 
-  const browserLoginMessage = `College ERP (${config.erpHost}) requested additional browser verification for this sign-in. You can sign in on ${config.erpHost} and paste your Access-Token as a fallback.`;
+  const browserLoginMessage = `College ERP (${config.erpHost}) requires Cloudflare browser verification on its login screen. Sign in once on ${config.erpHost}, copy your Access-Token with the 1-line command below, and click Paste & Auto-Sync — this website will verify it once and keep all ERP data synced automatically.`;
 
   const parsed = await readBoundedJson(res, 'College ERP').catch((err) => {
     if (!res.ok) {
