@@ -18,16 +18,19 @@ import {
 import {
   analyzeAttendanceInsights,
   buildDailyAttendanceLog,
+  buildTodayHourWiseLog,
   buildWeeklyAttendanceTrend,
   clampAttendanceDateToToday,
   computeAttendanceAsOfDate,
   computeAttendanceStats,
   computeOverallAttendance,
+  formatSmartSkipAttendText,
   getLatestAttendanceDate,
   normalizeAttendanceEndDate,
   shiftAttendanceDateKey,
   simulateAttendance,
 } from './attendance';
+import { decryptJsonWithKey, encryptJsonWithKey } from '../lib/deviceCrypto';
 import {
   compute30DayTrendSummary,
   sanitizeSnapshotStore,
@@ -1018,4 +1021,88 @@ test('sistmateContent enforces 8-slide structure, under-200-word summary, sample
   assert.equal(below.mustAttend, 18); // (30 + 18) / (42 + 18) = 48 / 60 = 80.0%
   assert.equal(below.status, 'below');
 });
+
+test('formatSmartSkipAttendText produces accurate 80% guidance across safe, borderline, and shortage states', () => {
+  const safeStats = computeAttendanceStats(42, 48, 80); // 87.5%, canSkip = 4
+  assert.equal(
+    formatSmartSkipAttendText(safeStats, 80),
+    'You can skip 4 classes and stay above 80%'
+  );
+
+  const edgeStats = computeAttendanceStats(40, 50, 80); // 80.0%, canSkip = 0
+  assert.equal(
+    formatSmartSkipAttendText(edgeStats, 80),
+    'Right on the 80% line — attend the next class'
+  );
+
+  const shortageStats = computeAttendanceStats(30, 42, 80); // 71.4%, mustAttend = 18
+  assert.equal(
+    formatSmartSkipAttendText(shortageStats, 80),
+    'You must attend 18 consecutive classes to reach 80%'
+  );
+});
+
+test('buildTodayHourWiseLog separates completed Present/Absent periods from upcoming Not Marked periods', () => {
+  const subjects: AttendanceSubject[] = [
+    { courseCode: 'SCSA1601', courseName: 'Computer Networks', faculty: 'Dr. Priya', credits: 4, attended: 35, total: 40, lastUpdated: '2026-11-25' },
+    { courseCode: 'SCSA1602', courseName: 'Compiler Design', faculty: 'Prof. Karthik', credits: 4, attended: 28, total: 36, lastUpdated: '2026-11-25' },
+    { courseCode: 'SCSA1603', courseName: 'Machine Learning', faculty: 'Dr. Anand', credits: 4, attended: 38, total: 40, lastUpdated: '2026-11-25' },
+  ];
+  // 2026-11-25 is a Wednesday
+  const timetable: TimetableSlot[] = [
+    { id: 'w1', day: 'Wed', startTime: '08:30', endTime: '09:20', courseCode: 'SCSA1601', courseName: 'Computer Networks', room: 'CS-201', faculty: 'Dr. Priya', kind: 'Lecture' },
+    { id: 'w2', day: 'Wed', startTime: '09:30', endTime: '10:20', courseCode: 'SCSA1602', courseName: 'Compiler Design', room: 'CS-202', faculty: 'Prof. Karthik', kind: 'Lecture' },
+    { id: 'w3', day: 'Wed', startTime: '14:00', endTime: '14:50', courseCode: 'SCSA1603', courseName: 'Machine Learning', room: 'CS-305', faculty: 'Dr. Anand', kind: 'Lab' },
+  ];
+
+  // Current time 11:00 on Wed 2026-11-25: 08:30 & 09:30 are marked, 14:00 is Not Marked
+  const midDay = new Date(2026, 10, 25, 11, 0, 0);
+  const log = buildTodayHourWiseLog(subjects, timetable, {
+    endDate: '2026-11-25',
+    targetPercent: 80,
+    now: midDay,
+  });
+
+  assert.equal(log.isToday, true);
+  assert.equal(log.dayName, 'Wed');
+  assert.equal(log.totalPeriods, 3);
+  assert.equal(log.periods[2].courseCode, 'SCSA1603');
+  assert.equal(log.periods[2].status, 'not-marked');
+  assert.equal(log.notMarkedCount, 1);
+  assert.equal(log.presentCount + log.absentCount + log.notMarkedCount, 3);
+});
+
+test('deviceCrypto AES-GCM encrypts/decrypts credentials safely, uses unique IVs, and rejects tampering', async () => {
+  const key = await globalThis.crypto.subtle.generateKey(
+    { name: 'AES-GCM', length: 256 },
+    true,
+    ['encrypt', 'decrypt']
+  );
+
+  const secretPayload = {
+    registerNumber: '42110482',
+    password: 'SuperSecretErpPassword!2026',
+    erpRole: 'student' as const,
+    mode: 'live' as const,
+    savedAt: '2026-11-27T10:00:00.000Z',
+  };
+
+  const env1 = await encryptJsonWithKey(key, secretPayload);
+  const env2 = await encryptJsonWithKey(key, secretPayload);
+
+  assert.equal(env1.v, 1);
+  assert.notEqual(env1.iv, env2.iv, 'Each encryption must use a fresh random IV');
+  assert.ok(!env1.ciphertext.includes('SuperSecretErpPassword'), 'Ciphertext must never leak plaintext');
+
+  const decoded = await decryptJsonWithKey<typeof secretPayload>(key, env1);
+  assert.deepEqual(decoded, secretPayload);
+
+  // Tampered ciphertext must fail authentication tag verification
+  const tampered = {
+    ...env1,
+    ciphertext: env1.ciphertext.slice(0, -4) + 'AAAA',
+  };
+  await assert.rejects(() => decryptJsonWithKey(key, tampered));
+});
+
 

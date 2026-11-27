@@ -7,6 +7,7 @@ import { DeadlinesView } from './components/DeadlinesView';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { LiveLoginGuideView } from './components/LiveLoginGuideView';
 import { MarksView } from './components/MarksView';
+import { MobileBottomNav } from './components/MobileBottomNav';
 import { NotificationsView } from './components/NotificationsView';
 import { OverviewView, type SectionState } from './components/OverviewView';
 import { PortalSyncView, type AutoSyncIntervalMinutes } from './components/PortalSyncView';
@@ -44,6 +45,7 @@ import type {
   TimetableSlot,
 } from './core/types';
 import { api, type CaeUploadResponse, type ErpDirectCaeAuthInput } from './lib/api';
+import { clearRememberedCredentials } from './lib/deviceCrypto';
 
 type SectionKey =
   | 'profile'
@@ -93,7 +95,7 @@ function getInitialTarget(): number {
   } catch {
     // Ignore storage errors
   }
-  return 75;
+  return 80;
 }
 
 function getInitialAutoSyncMinutes(): AutoSyncIntervalMinutes {
@@ -189,6 +191,10 @@ export default function App() {
       // Ignore storage errors
     }
   }, [autoSyncMinutes]);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }, [activeSection]);
 
   const requestVersions = useRef<Partial<Record<SectionKey, number>>>({});
   const skipNextAutoLoad = useRef(false);
@@ -351,7 +357,7 @@ export default function App() {
 
   const handleSignOut = useCallback(async (nextMode?: 'mock' | 'live') => {
     try {
-      await api.logout();
+      await Promise.allSettled([api.logout(), clearRememberedCredentials()]);
     } finally {
       for (const key of Object.keys(requestVersions.current) as SectionKey[]) {
         requestVersions.current[key] = (requestVersions.current[key] ?? 0) + 1;
@@ -759,7 +765,7 @@ export default function App() {
           onOpenMobileMenu={() => setMobileMenuOpen(true)}
         />
 
-        <main className="flex-1 px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+        <main className="flex-1 px-4 sm:px-6 lg:px-8 py-6 lg:py-8 pb-24 lg:pb-8">
           <div className="mx-auto max-w-6xl space-y-6">
             {authNotice ? (
               <div
@@ -842,10 +848,14 @@ export default function App() {
               <TimetableView
                 timetable={timetable}
                 attendance={attendance}
+                deadlines={deadlines}
+                completedDeadlineIds={completedDeadlineIds}
+                onToggleCompleteDeadline={handleToggleCompleteDeadline}
                 attendanceTarget={attendanceTarget}
                 onRetry={() => {
                   void loadSection('timetable', true);
                   void loadSection('attendance', true);
+                  void loadSection('deadlines', true);
                 }}
               />
             ) : null}
@@ -951,8 +961,17 @@ export default function App() {
             </ErrorBoundary>
           </div>
         </main>
-        <AppFooter />
+        <div className="pb-16 lg:pb-0">
+          <AppFooter />
+        </div>
       </div>
+
+      <MobileBottomNav
+        activeSection={activeSection}
+        shortageCount={shortageCount}
+        onSelect={setActiveSection}
+        onOpenMore={() => setMobileMenuOpen(true)}
+      />
 
       <CommandPalette
         open={paletteOpen}

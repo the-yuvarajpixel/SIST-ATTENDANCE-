@@ -81,9 +81,10 @@ export function TopBar({
           type="button"
           onClick={onOpenSync}
           aria-label="Sync Moodle LMS and College ERP"
-          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3 py-1.5 text-xs font-medium text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 dark:bg-emerald-600 dark:hover:bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >
-          <span>Sync LMS &amp; ERP</span>
+          <span className="sm:hidden">Sync</span>
+          <span className="hidden sm:inline">Sync LMS &amp; ERP</span>
         </button>
 
         <button

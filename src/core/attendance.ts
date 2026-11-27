@@ -1195,3 +1195,209 @@ export function computeAttendanceAsOfDate(
     };
   });
 }
+
+/**
+ * Formats natural-language smart skip/attend guidance against the target threshold.
+ */
+export function formatSmartSkipAttendText(
+  stats: AttendanceStats,
+  targetPercent = 80
+): string {
+  if (stats.status === 'shortage') {
+    return stats.mustAttend === 1
+      ? `You must attend 1 consecutive class to reach ${targetPercent}%`
+      : `You must attend ${stats.mustAttend} consecutive classes to reach ${targetPercent}%`;
+  }
+  if (stats.canSkip === 0) {
+    return `Right on the ${targetPercent}% line — attend the next class`;
+  }
+  return stats.canSkip === 1
+    ? `You can skip 1 class and stay above ${targetPercent}%`
+    : `You can skip ${stats.canSkip} classes and stay above ${targetPercent}%`;
+}
+
+export type PeriodAttendanceStatus = 'present' | 'absent' | 'not-marked';
+
+export interface TodayHourWisePeriod {
+  id: string;
+  periodNumber: number;
+  startTime: string;
+  endTime: string;
+  slotTime: string;
+  courseCode: string;
+  courseName: string;
+  room: string;
+  kind: 'Lecture' | 'Lab' | 'Tutorial';
+  faculty: string;
+  status: PeriodAttendanceStatus;
+}
+
+export interface TodayHourWiseLog {
+  dateKey: string;
+  displayDate: string;
+  dayName: string;
+  isToday: boolean;
+  periods: TodayHourWisePeriod[];
+  presentCount: number;
+  absentCount: number;
+  notMarkedCount: number;
+  totalPeriods: number;
+  dailyStatusLabel: 'All Present' | 'Partial' | 'Absent' | 'Not Marked' | 'No Classes';
+}
+
+const JS_DAY_TO_WEEKDAY: Record<number, TimetableSlot['day'] | null> = {
+  0: null,
+  1: 'Mon',
+  2: 'Tue',
+  3: 'Wed',
+  4: 'Thu',
+  5: 'Fri',
+  6: 'Sat',
+};
+
+function parseSlotStartMinutes(hhmm: string): number {
+  const [h, m] = hhmm.split(':').map((n) => Number(n));
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return 0;
+  return h * 60 + m;
+}
+
+/**
+ * Builds today's (or active end-date's) hour-wise period attendance log combining scheduled
+ * timetable slots with recorded day-by-day attendance entries. Periods scheduled later today
+ * (or without an attendance entry yet) appear as 'not-marked'.
+ */
+export function buildTodayHourWiseLog(
+  subjects: AttendanceSubject[],
+  timetable: TimetableSlot[],
+  options: {
+    endDate?: string;
+    targetPercent?: number;
+    now?: Date;
+  } = {}
+): TodayHourWiseLog {
+  const now = options.now ?? new Date();
+  const todayKey = getTodayLocalDateKey(now);
+  const effectiveKey = normalizeAttendanceEndDate(options.endDate, now);
+  const effectiveDate =
+    parseDateAsLocalMidnight(effectiveKey) ??
+    new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const isToday = effectiveKey === todayKey;
+  const weekday = JS_DAY_TO_WEEKDAY[effectiveDate.getDay()] ?? null;
+  const dayName = WEEKDAY_NAMES[effectiveDate.getDay()];
+  const displayDate = formatAttendanceDateDisplay(effectiveKey);
+
+  const dailyLog = buildDailyAttendanceLog(subjects, timetable, {
+    endDate: effectiveKey,
+    targetPercent: options.targetPercent ?? 80,
+    now,
+  });
+  const matchingDay = dailyLog.days.find((d) => d.dateKey === effectiveKey) ?? null;
+
+  const entryByCode = new Map<string, DailyAttendanceSubjectEntry>();
+  if (matchingDay) {
+    for (const entry of matchingDay.entries) {
+      entryByCode.set(entry.courseCode.trim().toUpperCase(), entry);
+    }
+  }
+
+  const subjectByCode = new Map(
+    subjects.map((s) => [s.courseCode.trim().toUpperCase(), s])
+  );
+
+  const scheduledSlots = weekday
+    ? timetable
+        .filter((s) => s.day === weekday)
+        .sort((a, b) => a.startTime.localeCompare(b.startTime))
+    : [];
+
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const periods: TodayHourWisePeriod[] = [];
+  const usedCodes = new Set<string>();
+
+  if (scheduledSlots.length > 0) {
+    scheduledSlots.forEach((slot, idx) => {
+      const codeKey = slot.courseCode.trim().toUpperCase();
+      usedCodes.add(codeKey);
+      const recorded = entryByCode.get(codeKey);
+      const slotStartMin = parseSlotStartMinutes(slot.startTime);
+
+      let status: PeriodAttendanceStatus;
+      if (isToday && slotStartMin > nowMinutes) {
+        status = 'not-marked';
+      } else if (recorded) {
+        status = recorded.status;
+      } else {
+        status = 'not-marked';
+      }
+
+      periods.push({
+        id: slot.id,
+        periodNumber: idx + 1,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        slotTime: `${slot.startTime}–${slot.endTime}`,
+        courseCode: slot.courseCode,
+        courseName: slot.courseName,
+        room: slot.room,
+        kind: slot.kind,
+        faculty: slot.faculty,
+        status,
+      });
+    });
+  }
+
+  // Include any recorded entries on effectiveKey that weren't in scheduledSlots
+  if (matchingDay) {
+    for (const entry of matchingDay.entries) {
+      const codeKey = entry.courseCode.trim().toUpperCase();
+      if (usedCodes.has(codeKey)) continue;
+      const [startTime = '09:00', endTime = '09:50'] = (entry.slotTime ?? '').split(/[–-]/);
+      const subj = subjectByCode.get(codeKey);
+      periods.push({
+        id: `${effectiveKey}-${codeKey}`,
+        periodNumber: periods.length + 1,
+        startTime: startTime.trim(),
+        endTime: endTime.trim(),
+        slotTime: entry.slotTime ?? 'Recorded',
+        courseCode: entry.courseCode,
+        courseName: entry.courseName,
+        room: 'Assigned Room',
+        kind: 'Lecture',
+        faculty: subj?.faculty ?? entry.faculty,
+        status: entry.status,
+      });
+    }
+  }
+
+  const presentCount = periods.filter((p) => p.status === 'present').length;
+  const absentCount = periods.filter((p) => p.status === 'absent').length;
+  const notMarkedCount = periods.filter((p) => p.status === 'not-marked').length;
+  const totalPeriods = periods.length;
+
+  let dailyStatusLabel: TodayHourWiseLog['dailyStatusLabel'];
+  if (totalPeriods === 0) {
+    dailyStatusLabel = 'No Classes';
+  } else if (presentCount === 0 && absentCount === 0) {
+    dailyStatusLabel = 'Not Marked';
+  } else if (absentCount === 0 && notMarkedCount === 0) {
+    dailyStatusLabel = 'All Present';
+  } else if (presentCount === 0 && notMarkedCount === 0) {
+    dailyStatusLabel = 'Absent';
+  } else {
+    dailyStatusLabel = 'Partial';
+  }
+
+  return {
+    dateKey: effectiveKey,
+    displayDate,
+    dayName,
+    isToday,
+    periods,
+    presentCount,
+    absentCount,
+    notMarkedCount,
+    totalPeriods,
+    dailyStatusLabel,
+  };
+}
+

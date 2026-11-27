@@ -7,6 +7,11 @@ import {
 } from '../core/erpTokenHelper';
 import type { DataSourceMode, ErpUserRole, LiveAdaptersSummary, SessionUser } from '../core/types';
 import { api } from '../lib/api';
+import {
+  clearRememberedCredentials,
+  loadRememberedCredentials,
+  saveRememberedCredentials,
+} from '../lib/deviceCrypto';
 import { AppFooter } from './AppFooter';
 import { PasswordInput } from './PasswordInput';
 
@@ -99,11 +104,35 @@ export function SignInView({
   const [lmsPassword, setLmsPassword] = useState('');
   const [erpToken, setErpToken] = useState('');
   const [lmsToken, setLmsToken] = useState('');
+  const [keepSignedIn, setKeepSignedIn] = useState(false);
+  const [rememberedLoaded, setRememberedLoaded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [formErrorCode, setFormErrorCode] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const erpTokenInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Restore device-encrypted credentials if user opted into "Keep me signed in"
+  useEffect(() => {
+    let cancelled = false;
+    loadRememberedCredentials()
+      .then((saved) => {
+        if (cancelled || !saved) return;
+        setRegisterNumber(saved.registerNumber);
+        setErpRole(saved.erpRole);
+        if (saved.password) {
+          setErpPassword(saved.password);
+        }
+        setKeepSignedIn(true);
+        setRememberedLoaded(true);
+      })
+      .catch(() => {
+        // Ignore decryption failure on rotated device key
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -325,6 +354,16 @@ export function SignInView({
         lmsUsername: mode === 'live' && wantsLmsAuto ? resolvedLmsUsername : undefined,
         lmsPassword: mode === 'live' && wantsLmsAuto ? lmsPassword : undefined,
       });
+      if (keepSignedIn) {
+        await saveRememberedCredentials({
+          registerNumber: inferredReg,
+          password: mode === 'live' ? erpPassword : '',
+          erpRole,
+          mode,
+        });
+      } else {
+        await clearRememberedCredentials();
+      }
       setErpPassword('');
       setLmsPassword('');
       onSignedIn(res.user, res.warning);
@@ -341,14 +380,25 @@ export function SignInView({
     }
   }
 
-  function fillSampleStudent() {
-    setMode('mock');
-    setErpRole('student');
-    setRegisterNumber('42110482');
-    setName('Arjun Subramanian');
-    setFieldErrors({});
+  async function launchDemoMode() {
     setFormError(null);
     setFormErrorCode(null);
+    setFieldErrors({});
+    setSubmitting(true);
+    try {
+      const res = await api.login({
+        registerNumber: '42110482',
+        name: 'Arjun Subramanian',
+        mode: 'mock',
+        erpRole: 'student',
+      });
+      onSignedIn(res.user, res.warning);
+    } catch (err) {
+      const eObj = err as Error;
+      setFormError(eObj.message || 'Unable to launch demo preview.');
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function pasteErpTokenFromClipboard() {
@@ -429,34 +479,51 @@ export function SignInView({
       <main className="flex-1 flex items-center justify-center p-6">
         <div className="w-full max-w-4xl grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           <div className="lg:col-span-5 space-y-5 lg:pt-4">
-            <p className="text-xs font-medium text-blue-700 dark:text-blue-400">
-              Sathyabama ERP · Moodle LMS
-            </p>
-            <h1 className="font-display text-3xl font-bold tracking-tight text-slate-900 dark:text-slate-50">
-              One dashboard for attendance, CGPA, and deadlines.
+            <div className="inline-flex items-baseline gap-2.5 border-l-4 border-emerald-600 dark:border-emerald-500 pl-3">
+              <span className="font-mono text-2xl font-bold tabular-nums text-emerald-700 dark:text-emerald-400">
+                80%
+              </span>
+              <span className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                Minimum attendance line · ERP &amp; LMS
+              </span>
+            </div>
+
+            <h1 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-slate-900 dark:text-slate-50 leading-tight">
+              Know where you stand before you skip.
             </h1>
+
             <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-400">
-              Login through Sathyabama ERP as Student, Staff, New Admission, or Parent, sync your Moodle LMS alongside it, or explore with sample data. Passwords are never saved; only verified tokens are encrypted in an HttpOnly cookie.
+              Attendance, marks, timetable and fees from your college ERP and LMS, in one place.
             </p>
+
             <ul className="space-y-2.5 pt-2 text-sm text-slate-700 dark:text-slate-300 border-t border-slate-200 dark:border-slate-800">
-              <li>Role-aware ERP sign-in (Student, Staff, New Admission, Parent)</li>
-              <li>Attendance &amp; bunk calculator updated by custom end date</li>
-              <li>Interactive future-semester CGPA planner &amp; CAE marks trends</li>
-              <li>Auto-update across College ERP, Moodle LMS, and all datasets</li>
+              <li>Subject-wise bunk calculator &amp; interactive What-If simulator</li>
+              <li>Today&apos;s daily &amp; hour-wise attendance log (Present / Absent / Not Marked)</li>
+              <li>10-point SGPA &amp; cumulative CGPA tracker with CAE marks</li>
+              <li>Weekly class timetable and college fee status overview</li>
             </ul>
+
+            <div className="pt-3 border-t border-slate-200 dark:border-slate-800">
+              <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                <strong className="font-semibold text-slate-700 dark:text-slate-300">
+                  What is this?
+                </strong>{' '}
+                An independent dashboard over your own data. Not affiliated with your institution.
+              </p>
+            </div>
           </div>
 
           <section className="lg:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 sm:p-8">
             <div className="flex items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800">
               <div>
-                <h2 className="font-display text-lg font-semibold text-slate-900 dark:text-slate-50">
-                  Sign in to your portal
+                <h2 className="font-display text-xl font-semibold text-slate-900 dark:text-slate-50">
+                  Sign in
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  AES-256-GCM encrypted HttpOnly session · Auto-syncs ERP &amp; LMS
+                  Use your college ERP register number and password.
                 </p>
               </div>
-              <Lock className="h-4 w-4 text-slate-400 shrink-0" aria-hidden="true" />
+              <Lock className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" aria-hidden="true" />
             </div>
 
             <div
@@ -1094,33 +1161,59 @@ export function SignInView({
                 </>
               )}
 
-              <div className="pt-2 flex items-center justify-between gap-4">
-                {mode === 'mock' ? (
-                  <button
-                    type="button"
-                    onClick={fillSampleStudent}
-                    className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline cursor-pointer"
-                  >
-                    Fill sample student (42110482)
-                  </button>
-                ) : (
-                  <span className="text-xs text-slate-500 dark:text-slate-400 flex-1 min-w-0">
-                    Passwords discarded after verification · Auto-updates all connected sites.
+              {/* Keep me signed in (Web Crypto API AES-GCM device-only encryption) */}
+              <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 px-3.5 py-3">
+                <label className="flex items-start gap-2.5 cursor-pointer">
+                  <input
+                    id="keepSignedIn"
+                    type="checkbox"
+                    checked={keepSignedIn}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setKeepSignedIn(checked);
+                      if (!checked) {
+                        setRememberedLoaded(false);
+                        void clearRememberedCredentials();
+                      }
+                    }}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 dark:border-slate-700 text-emerald-600 focus:ring-emerald-600 cursor-pointer"
+                  />
+                  <span className="space-y-0.5 min-w-0">
+                    <span className="block text-xs font-semibold text-slate-800 dark:text-slate-200">
+                      Keep me signed in
+                      {rememberedLoaded ? (
+                        <span className="ml-2 font-mono text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+                          · Encrypted on device
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="block text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                      Your details are encrypted and kept on this device only, so you don&apos;t have to sign in again.
+                    </span>
                   </span>
-                )}
+                </label>
+              </div>
 
+              <div className="pt-1 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="inline-flex items-center justify-center rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-5 py-2.5 text-sm font-medium text-white transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap shrink-0"
+                  className="inline-flex items-center justify-center rounded-lg bg-emerald-700 hover:bg-emerald-800 dark:bg-emerald-600 dark:hover:bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-white transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
                 >
                   {submitting
                     ? mode === 'live'
-                      ? 'Logging in via ERP...'
+                      ? 'Signing in via ERP...'
                       : 'Signing in...'
-                    : mode === 'live'
-                      ? 'Login & Sync Portal'
-                      : 'Open Dashboard'}
+                    : 'Sign in'}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => void launchDemoMode()}
+                  className="inline-flex items-center justify-center rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 px-4 py-2.5 text-xs font-semibold text-slate-800 dark:text-slate-100 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                >
+                  Demo Mode / Preview with Sample Data
                 </button>
               </div>
             </form>
