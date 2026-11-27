@@ -5,6 +5,7 @@ import {
   exchangeErpCredentialsForToken,
   exchangeMoodleCredentialsForToken,
   fetchLiveAttendance,
+  fetchLiveCaeMarksDirect,
   fetchLiveDeadlines,
   fetchLiveNotifications,
   fetchLiveProfile,
@@ -12,6 +13,7 @@ import {
   fetchLiveTimetable,
   getLiveAdapterConfig,
   probeUpstreamReachability,
+  uploadLiveCaeMarksToErp,
   verifyErpToken,
   verifyMoodleToken,
 } from './liveAdapters';
@@ -566,3 +568,87 @@ test('fetchLiveAttendance forwards custom endDate as ToDate and EndDate to Colle
   assert.equal(subjects.length, 1);
   assert.ok(subjects[0].lastUpdated.startsWith('2026-11-10'));
 });
+
+test('fetchLiveCaeMarksDirect and uploadLiveCaeMarksToErp communicate directly with Sathyabama ERP over HTTPS', async () => {
+  const session: StoredSession = {
+    registerNumber: '42110482',
+    name: 'Kavya Nair',
+    mode: 'live',
+    erpRole: 'staff',
+    erpToken: 'eyJhbGciOiJIUzI1NiJ9.cae_direct_token',
+    erpStudentId: '8821',
+    exp: Date.now() + 60_000,
+  };
+
+  let uploadCapturedUrl = '';
+  let uploadCapturedBody: Record<string, unknown> = {};
+  let uploadCapturedRedirect: RequestRedirect | undefined;
+
+  const mockFetch: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith('/erp/api/v1.0/MasterStudent/studentSemesterListByRegNo')) {
+      return jsonResponse({
+        status: 1,
+        responseData: [{ AcademicMonthId: 11, AcademicYear: '2026-2027', Semester: 6 }],
+      });
+    }
+    if (url.endsWith('/erp/api/v1.0/CAEResult/studentCAEResult')) {
+      return jsonResponse({
+        status: 1,
+        responseData: {
+          CAEResult: [
+            {
+              SubjectCode: 'SCSA1601',
+              SubjectName: 'Computer Networks',
+              Credit: 4,
+              CAE1: 44,
+              CAE2: 46,
+              AssignmentMark: 9,
+            },
+          ],
+        },
+      });
+    }
+    if (url.endsWith('/erp/api/v1.0/CAEResult/saveStudentCAEResult')) {
+      uploadCapturedUrl = url;
+      uploadCapturedRedirect = init?.redirect;
+      uploadCapturedBody = JSON.parse(String(init?.body ?? '{}'));
+      return jsonResponse({
+        status: 1,
+        message: 'CAE marks saved to Sathyabama ERP.',
+      });
+    }
+    return jsonResponse({}, 404);
+  };
+
+  const deps = { fetchImpl: mockFetch, env: { ERP_BASE_URL: 'https://erp.sathyabama.ac.in' } };
+  const pulled = await fetchLiveCaeMarksDirect(session, { semester: 6 }, deps);
+  assert.equal(pulled.host, 'erp.sathyabama.ac.in');
+  assert.equal(pulled.marks.length, 1);
+  assert.equal(pulled.marks[0].courseCode, 'SCSA1601');
+  assert.equal(pulled.marks[0].cae2, 46);
+
+  const uploaded = await uploadLiveCaeMarksToErp(session, pulled.marks, { semester: 6, mode: 'merge' }, deps);
+  assert.equal(uploadCapturedUrl, 'https://erp.sathyabama.ac.in/erp/api/v1.0/CAEResult/saveStudentCAEResult');
+  assert.equal(uploadCapturedRedirect, 'error');
+  assert.equal(uploadCapturedBody.RegisterNumber, '42110482');
+  assert.equal(Array.isArray(uploadCapturedBody.CAEMarks), true);
+  assert.equal(uploaded.synced, true);
+  assert.equal(uploaded.direction, 'push');
+  assert.match(uploaded.message, /saved to Sathyabama ERP/i);
+
+  // Graceful handling if ERP declines write access for read-only account
+  const declined = await uploadLiveCaeMarksToErp(
+    session,
+    pulled.marks,
+    { semester: 6 },
+    {
+      fetchImpl: async () => jsonResponse({ status: 0, message: 'Write access requires faculty role.' }),
+      env: { ERP_BASE_URL: 'https://erp.sathyabama.ac.in' },
+    }
+  );
+  assert.equal(declined.attempted, true);
+  assert.equal(declined.synced, false);
+  assert.match(declined.message, /Write access requires faculty role/i);
+});
+

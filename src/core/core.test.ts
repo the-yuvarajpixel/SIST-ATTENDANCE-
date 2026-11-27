@@ -12,7 +12,9 @@ import {
 } from './attendance';
 import {
   buildCgpaTrajectory,
+  buildGradeDistribution,
   computeCgpaSummary,
+  computeOverviewSemesterCgpa,
   computeProjectedCgpa,
   computeSemesterGpa,
   evaluateCgpaThreshold,
@@ -573,5 +575,124 @@ test('CAE Deep-Dive computes subject comparisons against class averages and hand
   assert.equal(allComp[0].deltaPts, -5.4);
   assert.ok(allComp[1].deltaPts > 0);
 });
+
+test('buildGradeDistribution aggregates subject grades across semesters, single terms, and planned courses', () => {
+  const semesters: SemesterResult[] = [
+    {
+      semester: 1,
+      termLabel: 'Nov 2024',
+      sgpa: 9.0,
+      credits: 12,
+      courses: [
+        { courseCode: 'CS101', courseName: 'Programming', credits: 4, grade: 'O', gradePoints: 10 },
+        { courseCode: 'CS102', courseName: 'Discrete Math', credits: 4, grade: 'A+', gradePoints: 9 },
+        { courseCode: 'CS103', courseName: 'Physics', credits: 4, grade: 'A', gradePoints: 8 },
+      ],
+    },
+    {
+      semester: 2,
+      termLabel: 'May 2025',
+      sgpa: 8.5,
+      credits: 8,
+      courses: [
+        { courseCode: 'CS201', courseName: 'Data Structures', credits: 4, grade: 'A+', gradePoints: 9 },
+        { courseCode: 'CS202', courseName: 'Digital Logic', credits: 4, grade: 'A', gradePoints: 8 },
+      ],
+    },
+  ];
+
+  const allDist = buildGradeDistribution(semesters, { scope: 'all' });
+  assert.equal(allDist.totalSubjects, 5);
+  assert.equal(allDist.totalCredits, 20);
+  assert.equal(allDist.topTierCount, 3); // 1 O + 2 A+
+  assert.equal(allDist.topTierPercent, 60);
+  assert.equal(allDist.dominantGrade, 'A+');
+  assert.equal(allDist.dominantCount, 2);
+  assert.equal(allDist.buckets.find((b) => b.grade === 'O')?.count, 1);
+  assert.equal(allDist.buckets.find((b) => b.grade === 'A+')?.credits, 8);
+
+  const sem2Dist = buildGradeDistribution(semesters, { scope: 2 });
+  assert.equal(sem2Dist.totalSubjects, 2);
+  assert.equal(sem2Dist.totalCredits, 8);
+
+  const withPlanned = buildGradeDistribution(semesters, {
+    scope: 'with-planned',
+    currentSemester: 3,
+    plannedCourses: [
+      { courseCode: 'CS301', courseName: 'Algorithms', credits: 4, expectedGrade: 'O' },
+      { courseCode: 'CS302', courseName: 'Networks', credits: 4, expectedGrade: 'O' },
+    ],
+  });
+  assert.equal(withPlanned.totalSubjects, 7);
+  assert.equal(withPlanned.dominantGrade, 'O');
+  assert.equal(withPlanned.dominantCount, 3);
+  assert.equal(withPlanned.subjects.filter((s) => s.isPlanned).length, 2);
+
+  const emptyDist = buildGradeDistribution([]);
+  assert.equal(emptyDist.totalSubjects, 0);
+  assert.equal(emptyDist.dominantGrade, null);
+  assert.equal(emptyDist.averageGradePoints, 0);
+});
+
+test('computeOverviewSemesterCgpa computes overall CGPA across course-grade and direct-SGPA semesters', () => {
+  const result = computeOverviewSemesterCgpa([
+    {
+      id: 'sem-1',
+      semester: 1,
+      inputMode: 'courses',
+      sgpa: 0,
+      credits: 0,
+      courses: [
+        { id: 'c1', name: 'Maths', grade: 'O', credits: 4 }, // 40
+        { id: 'c2', name: 'Physics', grade: 'A+', credits: 4 }, // 36
+        { id: 'c3', name: 'Lab', grade: 'A', credits: 2 }, // 16 -> total 92 / 10 = 9.2
+      ],
+    },
+    {
+      id: 'sem-2',
+      semester: 2,
+      inputMode: 'sgpa',
+      sgpa: 8.4,
+      credits: 10, // 84 -> cumulative 176 / 20 = 8.8
+      courses: [],
+    },
+  ]);
+
+  assert.equal(result.totalCredits, 20);
+  assert.equal(result.totalGradePoints, 176);
+  assert.equal(result.overallCgpa, 8.8);
+  assert.equal(result.equivalentPercent, 88);
+  assert.equal(result.classification, 'First Class with Distinction');
+  assert.equal(result.hasArrears, false);
+  assert.equal(result.bestSemester?.semester, 1);
+  assert.equal(result.semesters[0].sgpa, 9.2);
+  assert.equal(result.semesters[0].cumulativeCgpa, 9.2);
+  assert.equal(result.semesters[1].cumulativeCgpa, 8.8);
+
+  // Arrear course prevents Distinction classification
+  const withArrear = computeOverviewSemesterCgpa([
+    {
+      id: 'sem-1',
+      semester: 1,
+      inputMode: 'courses',
+      sgpa: 0,
+      credits: 0,
+      courses: [
+        { id: 'c1', name: 'Algorithms', grade: 'O', credits: 16 },
+        { id: 'c2', name: 'Elective', grade: 'RA', credits: 2 },
+      ],
+    },
+  ]);
+  assert.equal(withArrear.hasArrears, true);
+  assert.equal(withArrear.overallCgpa, 8.89);
+  assert.equal(withArrear.classification, 'First Class');
+
+  const empty = computeOverviewSemesterCgpa([]);
+  assert.equal(empty.overallCgpa, 0);
+  assert.equal(empty.totalCredits, 0);
+  assert.equal(empty.classification, 'Incomplete');
+});
+
+
 
 

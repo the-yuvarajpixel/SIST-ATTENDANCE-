@@ -131,6 +131,16 @@ export interface CaeTermTrendPoint {
   isCurrent?: boolean;
 }
 
+export interface ErpCaeDirectSyncStatus {
+  direction: 'pull' | 'push';
+  attempted: boolean;
+  synced: boolean;
+  host: string;
+  syncedAt: string;
+  subjectCount: number;
+  message: string;
+}
+
 export interface ResultsPayload {
   semesters: SemesterResult[];
   currentSemester: number;
@@ -138,6 +148,7 @@ export interface ResultsPayload {
   caeMarks?: SubjectCaeMark[];
   caeHistory?: CaeTermTrendPoint[];
   caeMarksUploaded?: boolean;
+  caeErpSync?: ErpCaeDirectSyncStatus;
 }
 
 export type DeadlineKind = 'assignment' | 'exam' | 'fee';

@@ -26,6 +26,7 @@ import { deduplicateDeadlines } from '../core/schedule';
 import type {
   AttendanceSubject,
   DeadlineItem,
+  ErpCaeDirectSyncStatus,
   ErpUserRole,
   NotificationItem,
   ResultsPayload,
@@ -53,6 +54,7 @@ const DEFAULT_ERP_PATHS = {
   semesterList: '/erp/api/v1.0/MasterStudent/studentSemesterListByRegNo',
   results: '/erp/api/v1.0/ResultMark/studentResult',
   caeResults: '/erp/api/v1.0/CAEResult/studentCAEResult',
+  caeUpload: '/erp/api/v1.0/CAEResult/saveStudentCAEResult',
   deadlines: '/erp/api/v1.0/EventCalendar/listStudent',
   notifications: '/erp/api/v1.0/Notifications/student',
 } as const;
@@ -77,6 +79,7 @@ export interface LiveAdapterConfig {
     semesterList: string;
     results: string;
     caeResults: string;
+    caeUpload: string;
     deadlines: string;
     notifications: string;
   };
@@ -86,6 +89,7 @@ export interface LiveAdapterConfig {
     timetable: boolean;
     results: boolean;
     caeResults: boolean;
+    caeUpload: boolean;
     deadlines: boolean;
     notifications: boolean;
   };
@@ -158,6 +162,7 @@ export function getLiveAdapterConfig(env: NodeJS.ProcessEnv = process.env): Live
       semesterList: safePath(env.ERP_SEMESTER_LIST_PATH, DEFAULT_ERP_PATHS.semesterList),
       results: safePath(env.ERP_RESULTS_PATH, DEFAULT_ERP_PATHS.results),
       caeResults: safePath(env.ERP_CAE_RESULTS_PATH, DEFAULT_ERP_PATHS.caeResults),
+      caeUpload: safePath(env.ERP_CAE_UPLOAD_PATH, DEFAULT_ERP_PATHS.caeUpload),
       deadlines: safePath(env.ERP_DEADLINES_PATH, DEFAULT_ERP_PATHS.deadlines),
       notifications: safePath(env.ERP_NOTIFICATIONS_PATH, DEFAULT_ERP_PATHS.notifications),
     },
@@ -167,6 +172,7 @@ export function getLiveAdapterConfig(env: NodeJS.ProcessEnv = process.env): Live
       timetable: isCustom(env.ERP_TIMETABLE_PATH),
       results: isCustom(env.ERP_RESULTS_PATH),
       caeResults: isCustom(env.ERP_CAE_RESULTS_PATH),
+      caeUpload: isCustom(env.ERP_CAE_UPLOAD_PATH),
       deadlines: isCustom(env.ERP_DEADLINES_PATH),
       notifications: isCustom(env.ERP_NOTIFICATIONS_PATH),
     },
@@ -1178,6 +1184,198 @@ export async function fetchLiveResults(
     ...parsed,
     caeMarks: caeMarks.length > 0 ? caeMarks : parsed.caeMarks,
   };
+}
+
+/**
+ * Fetches Continuous Assessment (CAE) marks directly from the College ERP portal
+ * using the authenticated user's verified ERP session token.
+ */
+export async function fetchLiveCaeMarksDirect(
+  session: StoredSession,
+  options: { semester?: number } = {},
+  deps: LiveAdapterDeps = {}
+): Promise<{ marks: SubjectCaeMark[]; host: string; syncedAt: string }> {
+  if (!session.erpToken) {
+    throw new LiveUpstreamError(
+      401,
+      'College ERP is not connected for this session. Sign in with your ERP credentials or Access-Token to pull CAE marks directly.'
+    );
+  }
+  const config = getLiveAdapterConfig(deps.env);
+  const host = config.erpHost ?? 'erp.sathyabama.ac.in';
+  const usePost = shouldUseSathyabamaPost(config.erpPaths.caeResults, config.customErpPaths.caeResults);
+
+  let latestSemEntry: Record<string, unknown> | undefined;
+  if (usePost) {
+    try {
+      const semRaw = await requestErpJson(
+        config.erpPaths.semesterList,
+        session.erpToken,
+        session.registerNumber,
+        { method: 'POST', body: { RegisterNumber: session.registerNumber } },
+        deps
+      );
+      const list =
+        isRecord(semRaw) && Array.isArray(semRaw.responseData)
+          ? semRaw.responseData.filter(isRecord)
+          : Array.isArray(semRaw)
+            ? semRaw.filter(isRecord)
+            : [];
+      if (options.semester !== undefined) {
+        latestSemEntry =
+          list.find((entry) => Number(entry.Semester) === options.semester) ?? list[list.length - 1];
+      } else {
+        latestSemEntry = list[list.length - 1];
+      }
+    } catch (err) {
+      if (err instanceof LiveUpstreamError && err.status === 401) throw err;
+    }
+  }
+
+  const studentId = usePost
+    ? await resolveErpStudentId(session.erpToken, session.registerNumber, session.erpStudentId, deps)
+    : undefined;
+
+  const caeBody: Record<string, unknown> = {
+    RegisterNumber: session.registerNumber,
+    ...(studentId ? { StudentId: /^\d+$/.test(studentId) ? Number(studentId) : studentId } : {}),
+    ...(latestSemEntry
+      ? {
+          AcademicMonthId: latestSemEntry.AcademicMonthId,
+          AcademicYear: latestSemEntry.AcademicYear,
+          Semester: latestSemEntry.Semester,
+        }
+      : options.semester !== undefined
+        ? { Semester: options.semester }
+        : {}),
+  };
+
+  const rawCae = await requestErpJson(
+    config.erpPaths.caeResults,
+    session.erpToken,
+    session.registerNumber,
+    usePost ? { method: 'POST', body: caeBody } : { method: 'GET' },
+    deps
+  );
+
+  const marks = parseErpCaeMarks(rawCae);
+  return {
+    marks,
+    host,
+    syncedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Uploads validated Continuous Assessment (CAE) marks directly to the configured College ERP portal
+ * endpoint over HTTPS using the user's verified ERP session token.
+ */
+export async function uploadLiveCaeMarksToErp(
+  session: StoredSession,
+  marks: SubjectCaeMark[],
+  options: { semester?: number; mode?: 'replace' | 'merge' } = {},
+  deps: LiveAdapterDeps = {}
+): Promise<ErpCaeDirectSyncStatus> {
+  const config = getLiveAdapterConfig(deps.env);
+  const host = config.erpHost ?? 'erp.sathyabama.ac.in';
+  const syncedAt = new Date().toISOString();
+
+  if (!session.erpToken) {
+    return {
+      direction: 'push',
+      attempted: false,
+      synced: false,
+      host,
+      syncedAt,
+      subjectCount: marks.length,
+      message: `Saved ${marks.length} subject record${marks.length === 1 ? '' : 's'} to your dashboard. Connect your College ERP account to push directly to ${host}.`,
+    };
+  }
+
+  const studentId = await resolveErpStudentId(
+    session.erpToken,
+    session.registerNumber,
+    session.erpStudentId,
+    deps
+  );
+
+  const payload: Record<string, unknown> = {
+    RegisterNumber: session.registerNumber,
+    ...(studentId ? { StudentId: /^\d+$/.test(studentId) ? Number(studentId) : studentId } : {}),
+    ...(options.semester !== undefined ? { Semester: options.semester } : {}),
+    UserRole: session.erpRole ?? 'student',
+    Mode: options.mode ?? 'merge',
+    CAEMarks: marks.map((m) => ({
+      SubjectCode: m.courseCode,
+      SubjectName: m.courseName,
+      Credit: m.credits,
+      CAE1: m.cae1,
+      CAE1Max: m.cae1Max,
+      CAE2: m.cae2,
+      CAE2Max: m.cae2Max,
+      AssignmentMark: m.internalBonus,
+      AssignmentMax: m.internalBonusMax,
+      InternalMark: m.internalTotal,
+      InternalMax: m.internalMax,
+      Remarks: m.remarks ?? '',
+    })),
+  };
+
+  try {
+    const raw = await requestErpJson(
+      config.erpPaths.caeUpload,
+      session.erpToken,
+      session.registerNumber,
+      { method: 'POST', body: payload },
+      deps
+    );
+
+    if (isRecord(raw) && (raw.status === 0 || raw.status === false || raw.success === false)) {
+      const upstreamMsg =
+        typeof raw.message === 'string' && raw.message.trim()
+          ? raw.message.trim()
+          : `College ERP (${host}) declined direct CAE write access for this account.`;
+      return {
+        direction: 'push',
+        attempted: true,
+        synced: false,
+        host,
+        syncedAt,
+        subjectCount: marks.length,
+        message: `Applied locally to your dashboard, but ${host} returned: ${upstreamMsg}`,
+      };
+    }
+
+    const upstreamOkMsg =
+      isRecord(raw) && typeof raw.message === 'string' && raw.message.trim()
+        ? raw.message.trim()
+        : `Uploaded ${marks.length} CAE subject record${marks.length === 1 ? '' : 's'} directly to ${host}.`;
+
+    return {
+      direction: 'push',
+      attempted: true,
+      synced: true,
+      host,
+      syncedAt,
+      subjectCount: marks.length,
+      message: upstreamOkMsg,
+    };
+  } catch (err) {
+    if (err instanceof LiveUpstreamError && err.status === 401) {
+      throw err;
+    }
+    const reason =
+      err instanceof Error ? err.message : `Unable to reach ${host} CAE upload endpoint.`;
+    return {
+      direction: 'push',
+      attempted: true,
+      synced: false,
+      host,
+      syncedAt,
+      subjectCount: marks.length,
+      message: `Applied locally to your dashboard. Direct write to ${host} could not complete (${reason}). Faculty/staff permissions may be required on the official ERP portal.`,
+    };
+  }
 }
 
 async function fetchMoodleCourseMap(

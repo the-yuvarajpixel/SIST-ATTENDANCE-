@@ -10,7 +10,10 @@ import {
   Trash2,
 } from 'lucide-react';
 import {
+  Bar,
+  BarChart,
   CartesianGrid,
+  Cell,
   Line,
   LineChart,
   ReferenceLine,
@@ -21,6 +24,7 @@ import {
 } from 'recharts';
 import {
   buildCgpaTrajectory,
+  buildGradeDistribution,
   computeCgpaSummary,
   computeProjectedCgpa,
   computeSemesterGpa,
@@ -30,6 +34,9 @@ import {
   planTargetCgpa,
   resolveFutureSemesterStats,
   type CgpaTrajectoryPoint,
+  type GradeDistributionBucket,
+  type GradeDistributionScope,
+  type GradeDistributionSubjectItem,
   type SimulatedFutureSemester,
 } from '../core/gpa';
 import type { GradeLetter, NavSection, PlannedCourse, ResultsPayload } from '../core/types';
@@ -181,6 +188,123 @@ function ProjectedCgpaDot({ cx, cy, payload, warningThreshold }: ProjectedDotPro
   );
 }
 
+const GRADE_BAR_COLOR: Record<GradeLetter, string> = {
+  O: 'var(--chart-grade-o)',
+  'A+': 'var(--chart-grade-ap)',
+  A: 'var(--chart-grade-a)',
+  'B+': 'var(--chart-grade-bp)',
+  B: 'var(--chart-grade-b)',
+  C: 'var(--chart-grade-c)',
+  RA: 'var(--chart-grade-ra)',
+};
+
+const GRADE_TEXT_CLASS: Record<GradeLetter, string> = {
+  O: 'text-emerald-700 dark:text-emerald-400',
+  'A+': 'text-blue-700 dark:text-blue-400',
+  A: 'text-sky-700 dark:text-sky-400',
+  'B+': 'text-teal-700 dark:text-teal-400',
+  B: 'text-amber-700 dark:text-amber-400',
+  C: 'text-orange-700 dark:text-orange-400',
+  RA: 'text-red-700 dark:text-red-400',
+};
+
+interface GradeDistTooltipProps {
+  active?: boolean;
+  payload?: Array<{ payload: GradeDistributionBucket }>;
+  metric: 'count' | 'credits';
+}
+
+function GradeDistributionTooltip({ active, payload, metric }: GradeDistTooltipProps) {
+  if (!active || !payload || payload.length === 0) return null;
+  const bucket = payload[0]?.payload;
+  if (!bucket) return null;
+
+  return (
+    <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3.5 py-2.5 shadow-lg text-xs space-y-1.5 max-w-[260px]">
+      <div className="flex items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-1.5">
+        <span className="font-display font-semibold text-slate-900 dark:text-slate-50">
+          Grade {bucket.grade}
+        </span>
+        <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
+          {bucket.gradePoints} pts
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-x-5 gap-y-1 font-mono tabular-nums">
+        <span className="text-slate-500 dark:text-slate-400">Subjects</span>
+        <span
+          className={`text-right ${
+            metric === 'count'
+              ? 'font-semibold text-slate-900 dark:text-slate-50'
+              : 'text-slate-700 dark:text-slate-300'
+          }`}
+        >
+          {bucket.count} ({bucket.sharePercent.toFixed(1)}%)
+        </span>
+        <span className="text-slate-500 dark:text-slate-400">Credits</span>
+        <span
+          className={`text-right ${
+            metric === 'credits'
+              ? 'font-semibold text-slate-900 dark:text-slate-50'
+              : 'text-slate-700 dark:text-slate-300'
+          }`}
+        >
+          {bucket.credits} cr ({bucket.creditSharePercent.toFixed(1)}%)
+        </span>
+      </div>
+      {bucket.subjects.length > 0 ? (
+        <div className="pt-1 border-t border-slate-100 dark:border-slate-800 space-y-0.5">
+          {bucket.subjects.slice(0, 4).map((s) => (
+            <p
+              key={`${s.semester}-${s.courseCode}`}
+              className="text-[11px] text-slate-600 dark:text-slate-300 truncate"
+            >
+              <span className="font-mono text-slate-400 mr-1.5">{s.courseCode}</span>
+              {s.courseName}
+            </p>
+          ))}
+          {bucket.subjects.length > 4 ? (
+            <p className="text-[11px] text-slate-400 dark:text-slate-500">
+              +{bucket.subjects.length - 4} more {bucket.subjects.length - 4 === 1 ? 'subject' : 'subjects'}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+interface SubjectGradeTooltipProps {
+  active?: boolean;
+  payload?: Array<{ payload: GradeDistributionSubjectItem }>;
+}
+
+function SubjectGradeTooltip({ active, payload }: SubjectGradeTooltipProps) {
+  if (!active || !payload || payload.length === 0) return null;
+  const item = payload[0]?.payload;
+  if (!item) return null;
+
+  return (
+    <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3.5 py-2.5 shadow-lg text-xs space-y-1.5 max-w-[260px]">
+      <div className="border-b border-slate-100 dark:border-slate-800 pb-1.5">
+        <p className="font-display font-semibold text-slate-900 dark:text-slate-50">
+          {item.courseName}
+        </p>
+        <p className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+          {item.courseCode} · Sem {item.semester} ({item.termLabel})
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-x-5 gap-y-1 font-mono tabular-nums">
+        <span className="text-slate-500 dark:text-slate-400">Grade</span>
+        <span className={`text-right font-semibold ${GRADE_TEXT_CLASS[item.grade]}`}>
+          {item.grade} ({item.gradePoints}/10)
+        </span>
+        <span className="text-slate-500 dark:text-slate-400">Credits</span>
+        <span className="text-right text-slate-700 dark:text-slate-300">{item.credits} cr</span>
+      </div>
+    </div>
+  );
+}
+
 export function ResultsView({ section, onNavigate, onRetry }: ResultsViewProps) {
   const payload = section.envelope?.data ?? null;
   const [targetCgpa, setTargetCgpa] = useState<number>(8.9);
@@ -190,6 +314,10 @@ export function ResultsView({ section, onNavigate, onRetry }: ResultsViewProps) 
   const [activePlannerSem, setActivePlannerSem] = useState<number | null>(null);
   const [showSgpaSeries, setShowSgpaSeries] = useState(true);
   const [expandedSem, setExpandedSem] = useState<number | null>(5);
+  const [gradeScope, setGradeScope] = useState<GradeDistributionScope>('all');
+  const [gradeChartMode, setGradeChartMode] = useState<'by-grade' | 'by-subject'>('by-grade');
+  const [gradeMetric, setGradeMetric] = useState<'count' | 'credits'>('count');
+  const [selectedGradeFilter, setSelectedGradeFilter] = useState<GradeLetter | null>(null);
 
   useEffect(() => {
     try {
@@ -264,6 +392,21 @@ export function ResultsView({ section, onNavigate, onRetry }: ResultsViewProps) 
     }
     return map;
   }, [trajectory]);
+
+  const gradeDistribution = useMemo(() => {
+    if (!payload) return null;
+    return buildGradeDistribution(payload.semesters, {
+      scope: gradeScope,
+      currentSemester: payload.currentSemester,
+      plannedCourses,
+    });
+  }, [payload, gradeScope, plannedCourses]);
+
+  const filteredGradeSubjects = useMemo(() => {
+    if (!gradeDistribution) return [];
+    if (!selectedGradeFilter) return gradeDistribution.subjects;
+    return gradeDistribution.subjects.filter((s) => s.grade === selectedGradeFilter);
+  }, [gradeDistribution, selectedGradeFilter]);
 
   const effectivePlannerSem = useMemo(() => {
     if (!payload) return 6;
@@ -1072,6 +1215,424 @@ export function ResultsView({ section, onNavigate, onRetry }: ResultsViewProps) 
                   )}
                 </div>
               </div>
+            </section>
+          ) : null}
+
+          {/* Grade Distribution Across Subjects (Recharts Bar Chart) */}
+          {gradeDistribution ? (
+            <section
+              aria-label="Grade distribution across subjects"
+              className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden"
+            >
+              <div className="px-5 sm:px-6 py-4 sm:py-5 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                <div className="min-w-0">
+                  <h2 className="font-display text-base sm:text-lg font-semibold text-slate-900 dark:text-slate-50">
+                    Grade Distribution Across Subjects
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono tabular-nums">
+                    <span>
+                      {gradeDistribution.totalSubjects}{' '}
+                      {gradeDistribution.totalSubjects === 1 ? 'subject' : 'subjects'}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span>{gradeDistribution.totalCredits} credits</span>
+                    {gradeDistribution.totalSubjects > 0 ? (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="text-emerald-700 dark:text-emerald-400 font-medium">
+                          {gradeDistribution.topTierPercent.toFixed(1)}% O or A+
+                        </span>
+                        {gradeDistribution.dominantGrade ? (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span>
+                              Most frequent: {gradeDistribution.dominantGrade} ({gradeDistribution.dominantCount})
+                            </span>
+                          </>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                  <label className="sr-only" htmlFor="gradeScopeSelect">
+                    Semester scope for grade distribution
+                  </label>
+                  <select
+                    id="gradeScopeSelect"
+                    value={String(gradeScope)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setSelectedGradeFilter(null);
+                      if (val === 'all' || val === 'with-planned') {
+                        setGradeScope(val);
+                      } else {
+                        const semNum = Number(val);
+                        setGradeScope(Number.isFinite(semNum) ? semNum : 'all');
+                      }
+                    }}
+                    className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-800 dark:text-slate-100 focus:border-blue-600 focus:outline-none cursor-pointer"
+                  >
+                    <option value="all">All Completed Semesters</option>
+                    {plannedCourses.length > 0 ? (
+                      <option value="with-planned">
+                        Completed + Sem {payload.currentSemester} Plan
+                      </option>
+                    ) : null}
+                    {[...payload.semesters].reverse().map((sem) => (
+                      <option key={sem.semester} value={String(sem.semester)}>
+                        Semester {sem.semester} ({sem.termLabel})
+                      </option>
+                    ))}
+                  </select>
+
+                  <div
+                    role="group"
+                    aria-label="Grade chart view mode"
+                    className="inline-flex items-center gap-1 rounded-lg bg-slate-100 dark:bg-slate-800 p-1"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setGradeChartMode('by-grade')}
+                      aria-pressed={gradeChartMode === 'by-grade'}
+                      className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                        gradeChartMode === 'by-grade'
+                          ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      By Grade
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGradeChartMode('by-subject')}
+                      aria-pressed={gradeChartMode === 'by-subject'}
+                      className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                        gradeChartMode === 'by-subject'
+                          ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      By Subject
+                    </button>
+                  </div>
+
+                  {gradeChartMode === 'by-grade' ? (
+                    <div
+                      role="group"
+                      aria-label="Grade distribution y-axis metric"
+                      className="inline-flex items-center gap-1 rounded-lg bg-slate-100 dark:bg-slate-800 p-1"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setGradeMetric('count')}
+                        aria-pressed={gradeMetric === 'count'}
+                        className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                          gradeMetric === 'count'
+                            ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                        }`}
+                      >
+                        Subjects
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setGradeMetric('credits')}
+                        aria-pressed={gradeMetric === 'credits'}
+                        className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                          gradeMetric === 'credits'
+                            ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                        }`}
+                      >
+                        Credits
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              {gradeDistribution.totalSubjects === 0 ? (
+                <div className="p-8 text-center space-y-2">
+                  <p className="text-sm font-medium text-slate-800 dark:text-slate-200">
+                    No graded subjects available in this scope yet
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Switch to &ldquo;Completed + Sem {payload.currentSemester} Plan&rdquo; or sync semester results from ERP to visualize your grade distribution.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 xl:grid-cols-12 divide-y xl:divide-y-0 xl:divide-x divide-slate-200 dark:divide-slate-800">
+                  {/* Recharts Bar Chart */}
+                  <div className="xl:col-span-7 p-5 sm:p-6 min-w-0 flex flex-col justify-between gap-4">
+                    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 text-xs text-slate-600 dark:text-slate-400">
+                      <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
+                        {gradeDistribution.buckets
+                          .filter((b) => b.count > 0)
+                          .map((b) => (
+                            <span key={b.grade} className="inline-flex items-center gap-1.5 font-mono tabular-nums">
+                              <span
+                                className="inline-block h-2.5 w-2.5 rounded-xs"
+                                style={{ backgroundColor: GRADE_BAR_COLOR[b.grade] }}
+                                aria-hidden="true"
+                              />
+                              <span>
+                                {b.grade}: {b.count}
+                              </span>
+                            </span>
+                          ))}
+                      </div>
+                      <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                        {gradeChartMode === 'by-grade'
+                          ? gradeMetric === 'count'
+                            ? 'Subjects per grade'
+                            : 'Credits per grade'
+                          : 'Grade points (0–10)'}
+                      </span>
+                    </div>
+
+                    {gradeChartMode === 'by-grade' ? (
+                      <div className="h-[260px] sm:h-[280px] w-full min-w-0">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart
+                            data={gradeDistribution.buckets}
+                            margin={{ top: 10, right: 12, left: -14, bottom: 4 }}
+                          >
+                            <CartesianGrid
+                              strokeDasharray="3 3"
+                              vertical={false}
+                              stroke="var(--chart-grid)"
+                            />
+                            <XAxis
+                              dataKey="grade"
+                              tick={{
+                                fill: 'var(--chart-axis)',
+                                fontSize: 12,
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                              tickLine={false}
+                              axisLine={{ stroke: 'var(--chart-grid)' }}
+                              dy={6}
+                            />
+                            <YAxis
+                              allowDecimals={false}
+                              tick={{
+                                fill: 'var(--chart-axis)',
+                                fontSize: 12,
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                              tickLine={false}
+                              axisLine={false}
+                            />
+                            <Tooltip
+                              cursor={{ fill: 'rgba(148, 163, 184, 0.12)' }}
+                              content={<GradeDistributionTooltip metric={gradeMetric} />}
+                            />
+                            <Bar
+                              dataKey={gradeMetric}
+                              name={gradeMetric === 'count' ? 'Subjects' : 'Credits'}
+                              radius={[6, 6, 0, 0]}
+                              maxBarSize={46}
+                              isAnimationActive={false}
+                              onClick={(_entry, index) => {
+                                const grade = gradeDistribution.buckets[index]?.grade;
+                                if (!grade) return;
+                                setSelectedGradeFilter((prev) => (prev === grade ? null : grade));
+                              }}
+                              className="cursor-pointer"
+                            >
+                              {gradeDistribution.buckets.map((bucket) => {
+                                const dimmed =
+                                  selectedGradeFilter !== null && selectedGradeFilter !== bucket.grade;
+                                return (
+                                  <Cell
+                                    key={bucket.grade}
+                                    fill={GRADE_BAR_COLOR[bucket.grade]}
+                                    fillOpacity={dimmed ? 0.3 : 1}
+                                  />
+                                );
+                              })}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    ) : (
+                      <div className="w-full overflow-x-auto">
+                        <div
+                          className="h-[260px] sm:h-[280px]"
+                          style={{
+                            minWidth:
+                              filteredGradeSubjects.length > 8
+                                ? `${filteredGradeSubjects.length * 64}px`
+                                : '100%',
+                          }}
+                        >
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart
+                              data={filteredGradeSubjects}
+                              margin={{ top: 10, right: 12, left: -14, bottom: 18 }}
+                            >
+                              <CartesianGrid
+                                strokeDasharray="3 3"
+                                vertical={false}
+                                stroke="var(--chart-grid)"
+                              />
+                              <XAxis
+                                dataKey="courseCode"
+                                tick={{
+                                  fill: 'var(--chart-axis)',
+                                  fontSize: 11,
+                                  fontFamily: 'var(--font-mono)',
+                                }}
+                                tickLine={false}
+                                axisLine={{ stroke: 'var(--chart-grid)' }}
+                                interval={0}
+                                angle={filteredGradeSubjects.length > 6 ? -28 : 0}
+                                textAnchor={filteredGradeSubjects.length > 6 ? 'end' : 'middle'}
+                                dy={6}
+                              />
+                              <YAxis
+                                domain={[0, 10]}
+                                ticks={[0, 2, 4, 6, 8, 10]}
+                                tick={{
+                                  fill: 'var(--chart-axis)',
+                                  fontSize: 12,
+                                  fontFamily: 'var(--font-mono)',
+                                }}
+                                tickLine={false}
+                                axisLine={false}
+                              />
+                              <Tooltip
+                                cursor={{ fill: 'rgba(148, 163, 184, 0.12)' }}
+                                content={<SubjectGradeTooltip />}
+                              />
+                              <ReferenceLine
+                                y={gradeDistribution.averageGradePoints}
+                                stroke="var(--chart-sgpa)"
+                                strokeDasharray="4 4"
+                                strokeWidth={1.5}
+                              />
+                              <Bar
+                                dataKey="gradePoints"
+                                name="Grade Points"
+                                radius={[5, 5, 0, 0]}
+                                maxBarSize={36}
+                                isAnimationActive={false}
+                              >
+                                {filteredGradeSubjects.map((subj) => (
+                                  <Cell
+                                    key={`${subj.semester}-${subj.courseCode}`}
+                                    fill={GRADE_BAR_COLOR[subj.grade]}
+                                  />
+                                ))}
+                              </Bar>
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Interactive Subject Breakdown by Grade */}
+                  <div className="xl:col-span-5 flex flex-col">
+                    <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                            Subjects by Grade
+                          </h3>
+                          <p className="text-xs text-slate-500 dark:text-slate-400">
+                            {selectedGradeFilter
+                              ? `Showing ${filteredGradeSubjects.length} ${
+                                  filteredGradeSubjects.length === 1 ? 'subject' : 'subjects'
+                                } with Grade ${selectedGradeFilter}`
+                              : 'Click a bar or grade tab below to filter subjects'}
+                          </p>
+                        </div>
+                        {selectedGradeFilter ? (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedGradeFilter(null)}
+                            className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
+                          >
+                            Show all
+                          </button>
+                        ) : (
+                          <span className="font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400 whitespace-nowrap shrink-0">
+                            Avg {gradeDistribution.averageGradePoints.toFixed(2)} pts
+                          </span>
+                        )}
+                      </div>
+
+                      <div
+                        role="group"
+                        aria-label="Filter subject list by grade"
+                        className="flex flex-wrap items-center gap-1"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setSelectedGradeFilter(null)}
+                          aria-pressed={selectedGradeFilter === null}
+                          className={`rounded-md px-2 py-1 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                            selectedGradeFilter === null
+                              ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900'
+                              : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-50'
+                          }`}
+                        >
+                          All ({gradeDistribution.totalSubjects})
+                        </button>
+                        {gradeDistribution.buckets
+                          .filter((b) => b.count > 0)
+                          .map((b) => {
+                            const active = selectedGradeFilter === b.grade;
+                            return (
+                              <button
+                                key={b.grade}
+                                type="button"
+                                onClick={() =>
+                                  setSelectedGradeFilter((prev) => (prev === b.grade ? null : b.grade))
+                                }
+                                aria-pressed={active}
+                                className={`rounded-md px-2 py-1 font-mono text-xs tabular-nums font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                                  active
+                                    ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-50'
+                                }`}
+                              >
+                                {b.grade} ({b.count})
+                              </button>
+                            );
+                          })}
+                      </div>
+                    </div>
+
+                    <div className="divide-y divide-slate-200 dark:divide-slate-800 max-h-[255px] overflow-y-auto flex-1">
+                      {filteredGradeSubjects.map((subj) => (
+                        <div
+                          key={`${subj.semester}-${subj.courseCode}-${subj.isPlanned ? 'plan' : 'done'}`}
+                          className="px-5 py-2.5 flex items-center justify-between gap-3"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-xs sm:text-sm font-medium text-slate-900 dark:text-slate-100 truncate">
+                              {subj.courseName}
+                            </p>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+                              {subj.courseCode} · Sem {subj.semester} · {subj.credits} cr
+                              {subj.isPlanned ? ' · Planned' : ''}
+                            </p>
+                          </div>
+                          <span
+                            className={`font-mono text-xs sm:text-sm font-semibold tabular-nums whitespace-nowrap shrink-0 ${GRADE_TEXT_CLASS[subj.grade]}`}
+                          >
+                            {subj.grade} ({subj.gradePoints})
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </section>
           ) : null}
 

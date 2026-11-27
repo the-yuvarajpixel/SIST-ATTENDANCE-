@@ -2,8 +2,12 @@ import { useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'rea
 import {
   AlertCircle,
   CheckCircle2,
+  CloudDownload,
+  CloudUpload,
   Download,
+  ExternalLink,
   FileSpreadsheet,
+  KeyRound,
   Plus,
   RotateCcw,
   Trash2,
@@ -16,17 +20,28 @@ import {
   buildNormalizedCaeMark,
   parseCaeMarksText,
 } from '../core/caeUpload';
-import type { SubjectCaeMark } from '../core/types';
+import type { ErpUserRole, SessionUser, SubjectCaeMark } from '../core/types';
+import type { CaeUploadResponse, ErpDirectCaeAuthInput } from '../lib/api';
 
 interface CaeUploadPanelProps {
+  user: SessionUser;
+  currentSemester?: number;
   existingMarks: SubjectCaeMark[];
   hasUploadedData: boolean;
-  onUpload: (marks: SubjectCaeMark[], mode: 'replace' | 'merge') => Promise<void>;
+  onUpload: (
+    marks: SubjectCaeMark[],
+    mode: 'replace' | 'merge',
+    options?: { syncToErp?: boolean; erpAuth?: ErpDirectCaeAuthInput }
+  ) => Promise<CaeUploadResponse>;
+  onPullFromErp: (
+    mode: 'replace' | 'merge',
+    erpAuth?: ErpDirectCaeAuthInput
+  ) => Promise<CaeUploadResponse>;
   onReset: () => Promise<void>;
   onClose: () => void;
 }
 
-type UploadTab = 'file' | 'paste' | 'manual';
+type UploadTab = 'erp-direct' | 'file' | 'paste' | 'manual';
 type UploadMode = 'merge' | 'replace';
 
 interface ManualDraftRow {
@@ -39,6 +54,13 @@ interface ManualDraftRow {
   internalBonus: string;
   classAvgInternal: string;
 }
+
+const ERP_ROLE_OPTIONS: ReadonlyArray<{ id: ErpUserRole; label: string }> = [
+  { id: 'student', label: 'Student' },
+  { id: 'staff', label: 'Staff' },
+  { id: 'new-admission', label: 'New Admission' },
+  { id: 'parent', label: 'Parent' },
+];
 
 function makeDraftRow(seed?: SubjectCaeMark, idx = 0): ManualDraftRow {
   return {
@@ -78,14 +100,29 @@ function getStandingLabel(standing: SubjectCaeMark['standing']): { label: string
 }
 
 export function CaeUploadPanel({
+  user,
+  currentSemester,
   existingMarks,
   hasUploadedData,
   onUpload,
+  onPullFromErp,
   onReset,
   onClose,
 }: CaeUploadPanelProps) {
-  const [tab, setTab] = useState<UploadTab>('file');
+  const isLiveErpConnected = user.mode === 'live' && user.erpTokenPresent;
+
+  const [tab, setTab] = useState<UploadTab>('erp-direct');
   const [uploadMode, setUploadMode] = useState<UploadMode>('merge');
+  const [syncToErp, setSyncToErp] = useState<boolean>(isLiveErpConnected);
+
+  // Direct ERP portal auth fields (passwords are never stored; discarded after verification)
+  const [erpRole, setErpRole] = useState<ErpUserRole>(user.erpRole ?? 'student');
+  const [erpRegNo, setErpRegNo] = useState<string>(user.registerNumber);
+  const [erpPassword, setErpPassword] = useState<string>('');
+  const [erpToken, setErpToken] = useState<string>('');
+  const [showTokenFallback, setShowTokenFallback] = useState<boolean>(false);
+  const [showReauthForm, setShowReauthForm] = useState<boolean>(!isLiveErpConnected);
+
   const [dragActive, setDragActive] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [rawText, setRawText] = useState('');
@@ -96,9 +133,12 @@ export function CaeUploadPanel({
       : [makeDraftRow(undefined, 0)]
   );
   const [saving, setSaving] = useState(false);
+  const [pullingErp, setPullingErp] = useState(false);
+  const [pushingErp, setPushingErp] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
+  const [submitWarning, setSubmitWarning] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const parsedTextResult = useMemo(() => {
@@ -132,13 +172,40 @@ export function CaeUploadPanel({
     return { marks, errors };
   }, [manualRows]);
 
-  const activeMarks = tab === 'manual' ? manualEvaluation.marks : (parsedTextResult?.marks ?? []);
-  const activeErrors = tab === 'manual' ? manualEvaluation.errors : (parsedTextResult?.errors ?? []);
+  const activeMarks =
+    tab === 'manual'
+      ? manualEvaluation.marks
+      : tab === 'erp-direct'
+        ? existingMarks
+        : (parsedTextResult?.marks ?? []);
+  const activeErrors =
+    tab === 'manual'
+      ? manualEvaluation.errors
+      : tab === 'erp-direct'
+        ? []
+        : (parsedTextResult?.errors ?? []);
+
+  function buildOptionalErpAuth(): ErpDirectCaeAuthInput | undefined {
+    const trimmedToken = erpToken.trim();
+    const trimmedReg = erpRegNo.trim();
+    const hasInlineCreds = Boolean(trimmedToken || erpPassword);
+    if (!hasInlineCreds) {
+      return currentSemester ? { semester: currentSemester } : undefined;
+    }
+    return {
+      erpRole,
+      registerNumber: trimmedReg || user.registerNumber,
+      erpUsername: trimmedReg || user.registerNumber,
+      ...(trimmedToken ? { erpToken: trimmedToken } : { erpPassword }),
+      ...(currentSemester ? { semester: currentSemester } : {}),
+    };
+  }
 
   async function readUploadedFile(file: File) {
     setFileError(null);
     setSubmitError(null);
     setSubmitSuccess(null);
+    setSubmitWarning(null);
 
     if (file.size > MAX_CAE_UPLOAD_BYTES) {
       setFileError(`File "${file.name}" exceeds the ${Math.round(MAX_CAE_UPLOAD_BYTES / 1024)} KB limit.`);
@@ -191,6 +258,7 @@ export function CaeUploadPanel({
   function handleLoadSampleIntoPaste() {
     setSubmitError(null);
     setSubmitSuccess(null);
+    setSubmitWarning(null);
     setSelectedFileName(null);
     setRawText(buildCaeCsvTemplate(existingMarks));
   }
@@ -198,6 +266,7 @@ export function CaeUploadPanel({
   function updateManualRow(id: string, field: keyof Omit<ManualDraftRow, 'id'>, value: string) {
     setSubmitError(null);
     setSubmitSuccess(null);
+    setSubmitWarning(null);
     setManualRows((prev) => prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
   }
 
@@ -210,9 +279,79 @@ export function CaeUploadPanel({
     setManualRows((prev) => (prev.length <= 1 ? [makeDraftRow(undefined, 0)] : prev.filter((r) => r.id !== id)));
   }
 
+  async function handlePullDirectFromErp() {
+    setSubmitError(null);
+    setSubmitSuccess(null);
+    setSubmitWarning(null);
+
+    const hasInlineAuth = Boolean(erpToken.trim() || erpPassword);
+    if (!isLiveErpConnected && !hasInlineAuth) {
+      setSubmitError(
+        'Enter your Sathyabama ERP password or paste your ERP Access-Token to pull CAE marks directly from erp.sathyabama.ac.in.'
+      );
+      return;
+    }
+
+    setPullingErp(true);
+    try {
+      const response = await onPullFromErp(uploadMode, buildOptionalErpAuth());
+      setErpPassword('');
+      setShowReauthForm(false);
+      setSubmitSuccess(
+        response.erpSync?.message ??
+          'Imported live Continuous Assessment (CAE) marks directly from erp.sathyabama.ac.in.'
+      );
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Unable to pull CAE marks directly from College ERP.');
+    } finally {
+      setPullingErp(false);
+    }
+  }
+
+  async function handlePushCurrentToErp() {
+    setSubmitError(null);
+    setSubmitSuccess(null);
+    setSubmitWarning(null);
+
+    if (existingMarks.length === 0) {
+      setSubmitError('Load or enter at least one subject CAE mark before uploading to the ERP portal.');
+      return;
+    }
+
+    const hasInlineAuth = Boolean(erpToken.trim() || erpPassword);
+    if (!isLiveErpConnected && !hasInlineAuth) {
+      setSubmitError(
+        'Enter your Sathyabama ERP password or Access-Token above to submit marks directly to erp.sathyabama.ac.in.'
+      );
+      return;
+    }
+
+    setPushingErp(true);
+    try {
+      const response = await onUpload(existingMarks, uploadMode, {
+        syncToErp: true,
+        erpAuth: buildOptionalErpAuth(),
+      });
+      setErpPassword('');
+      if (response.erpSync?.synced) {
+        setShowReauthForm(false);
+        setSubmitSuccess(response.erpSync.message);
+      } else if (response.erpSync) {
+        setSubmitWarning(response.erpSync.message);
+      } else {
+        setSubmitSuccess('CAE marks updated.');
+      }
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Unable to upload CAE marks directly to College ERP.');
+    } finally {
+      setPushingErp(false);
+    }
+  }
+
   async function handleSaveUpload() {
     setSubmitError(null);
     setSubmitSuccess(null);
+    setSubmitWarning(null);
 
     if (activeMarks.length === 0) {
       setSubmitError(
@@ -223,10 +362,22 @@ export function CaeUploadPanel({
 
     setSaving(true);
     try {
-      await onUpload(activeMarks, uploadMode);
-      setSubmitSuccess(
-        `Uploaded ${activeMarks.length} subject ${activeMarks.length === 1 ? 'record' : 'records'} (${uploadMode === 'replace' ? 'replaced all' : 'merged'}) — charts and breakdown updated.`
-      );
+      const response = await onUpload(activeMarks, uploadMode, {
+        syncToErp,
+        erpAuth: syncToErp ? buildOptionalErpAuth() : undefined,
+      });
+      setErpPassword('');
+      if (syncToErp && response.erpSync) {
+        if (response.erpSync.synced) {
+          setSubmitSuccess(response.erpSync.message);
+        } else {
+          setSubmitWarning(response.erpSync.message);
+        }
+      } else {
+        setSubmitSuccess(
+          `Uploaded ${activeMarks.length} subject ${activeMarks.length === 1 ? 'record' : 'records'} (${uploadMode === 'replace' ? 'replaced all' : 'merged'}) — charts and breakdown updated.`
+        );
+      }
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Unable to save uploaded CAE marks.');
     } finally {
@@ -237,6 +388,7 @@ export function CaeUploadPanel({
   async function handleResetUploaded() {
     setSubmitError(null);
     setSubmitSuccess(null);
+    setSubmitWarning(null);
     setResetting(true);
     try {
       await onReset();
@@ -247,6 +399,8 @@ export function CaeUploadPanel({
       setResetting(false);
     }
   }
+
+  const busy = saving || pullingErp || pushingErp || resetting;
 
   return (
     <section
@@ -261,7 +415,7 @@ export function CaeUploadPanel({
             <span>Upload Continuous Assessment (CAE) Marks</span>
           </h3>
           <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-            Import a CSV/JSON file, paste a table from Excel or ERP, or enter subject CAE 1, CAE 2 &amp; Assignment scores manually.
+            Sync directly through Sathyabama ERP (<span className="font-mono">erp.sathyabama.ac.in</span>), import a CSV/JSON file, paste a table, or enter marks manually.
           </p>
         </div>
 
@@ -290,10 +444,11 @@ export function CaeUploadPanel({
         <div
           role="tablist"
           aria-label="CAE upload input method"
-          className="inline-flex items-center gap-1 rounded-lg bg-slate-200/70 dark:bg-slate-800 p-1"
+          className="inline-flex flex-wrap items-center gap-1 rounded-lg bg-slate-200/70 dark:bg-slate-800 p-1"
         >
           {(
             [
+              { id: 'erp-direct', label: 'ERP Portal Direct' },
               { id: 'file', label: 'Upload CSV / JSON' },
               { id: 'paste', label: 'Paste Table' },
               { id: 'manual', label: 'Manual Entry' },
@@ -307,6 +462,7 @@ export function CaeUploadPanel({
               onClick={() => {
                 setTab(item.id);
                 setSubmitError(null);
+                setSubmitWarning(null);
               }}
               className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
                 tab === item.id
@@ -366,6 +522,16 @@ export function CaeUploadPanel({
           </div>
         ) : null}
 
+        {submitWarning ? (
+          <div
+            role="status"
+            className="rounded-lg border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-2.5 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2"
+          >
+            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden="true" />
+            <span>{submitWarning}</span>
+          </div>
+        ) : null}
+
         {submitSuccess ? (
           <div
             role="status"
@@ -373,6 +539,204 @@ export function CaeUploadPanel({
           >
             <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
             <span>{submitSuccess}</span>
+          </div>
+        ) : null}
+
+        {/* TAB 0: ERP Portal Direct */}
+        {tab === 'erp-direct' ? (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
+              <div className="space-y-0.5 min-w-0">
+                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  Sathyabama College ERP Direct Sync
+                </p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  <span>erp.sathyabama.ac.in</span>
+                  <span aria-hidden="true"> · </span>
+                  <span className={isLiveErpConnected ? 'text-emerald-700 dark:text-emerald-400 font-medium' : ''}>
+                    {isLiveErpConnected
+                      ? `Connected live as ${user.registerNumber}`
+                      : 'Sign in below to pull or upload CAE marks directly'}
+                  </span>
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2.5 shrink-0">
+                {isLiveErpConnected ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowReauthForm((prev) => !prev)}
+                    className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline cursor-pointer whitespace-nowrap"
+                  >
+                    {showReauthForm ? 'Use active ERP session' : 'Switch ERP account'}
+                  </button>
+                ) : null}
+                <a
+                  href="https://erp.sathyabama.ac.in/account/login"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap"
+                >
+                  <span>Open ERP Portal</span>
+                  <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                </a>
+              </div>
+            </div>
+
+            {showReauthForm ? (
+              <div className="space-y-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                    ERP Account Type
+                  </span>
+                  <div
+                    role="radiogroup"
+                    aria-label="Direct ERP account type"
+                    className="inline-flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 dark:bg-slate-800 p-1"
+                  >
+                    {ERP_ROLE_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={erpRole === opt.id}
+                        onClick={() => setErpRole(opt.id)}
+                        className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                          erpRole === opt.id
+                            ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label
+                      htmlFor="caeDirectErpReg"
+                      className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                    >
+                      {erpRole === 'staff'
+                        ? 'Staff Number / Official Email'
+                        : erpRole === 'new-admission'
+                          ? 'Application Number'
+                          : 'ERP Register Number'}
+                    </label>
+                    <input
+                      id="caeDirectErpReg"
+                      type="text"
+                      value={erpRegNo}
+                      onChange={(e) => setErpRegNo(e.target.value)}
+                      placeholder={erpRole === 'staff' ? 'faculty@sathyabama.ac.in' : 'e.g. 42110482'}
+                      className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-xs font-mono text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="caeDirectErpPass"
+                      className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                    >
+                      ERP Password <span className="font-normal text-slate-400">· Never stored</span>
+                    </label>
+                    <input
+                      id="caeDirectErpPass"
+                      type="password"
+                      value={erpPassword}
+                      onChange={(e) => setErpPassword(e.target.value)}
+                      placeholder="Enter ERP portal password"
+                      autoComplete="current-password"
+                      className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setShowTokenFallback((prev) => !prev)}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 cursor-pointer"
+                  >
+                    <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>
+                      {showTokenFallback
+                        ? 'Hide ERP Access-Token field'
+                        : 'Or paste ERP Access-Token manually (optional OTP fallback)'}
+                    </span>
+                  </button>
+
+                  {showTokenFallback ? (
+                    <div className="mt-2">
+                      <label
+                        htmlFor="caeDirectErpToken"
+                        className="sr-only"
+                      >
+                        ERP Access-Token
+                      </label>
+                      <input
+                        id="caeDirectErpToken"
+                        type="password"
+                        value={erpToken}
+                        onChange={(e) => setErpToken(e.target.value)}
+                        placeholder="Paste Access-Token from erp.sathyabama.ac.in (optional)"
+                        className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-xs font-mono text-slate-900 dark:text-slate-100 focus:border-blue-600 focus:outline-none"
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/40 p-4 flex flex-col justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">
+                    Pull Live CAE Marks from ERP
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    Reads your published CAE 1, CAE 2 &amp; internal scores directly from Sathyabama ERP and loads them into the dashboard.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handlePullDirectFromErp()}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3.5 py-2 text-xs font-medium text-white transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                >
+                  <CloudDownload className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>{pullingErp ? 'Pulling from ERP...' : 'Pull CAE Marks from ERP'}</span>
+                </button>
+              </div>
+
+              <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/40 p-4 flex flex-col justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">
+                    Upload Active Marks Direct to ERP
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    Submits your {existingMarks.length} active subject CAE{' '}
+                    {existingMarks.length === 1 ? 'record' : 'records'} directly to{' '}
+                    <span className="font-mono">erp.sathyabama.ac.in</span> (or upload a CSV/table via the other tabs with ERP sync enabled).
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy || existingMarks.length === 0}
+                  onClick={() => void handlePushCurrentToErp()}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3.5 py-2 text-xs font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                >
+                  <CloudUpload className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>
+                    {pushingErp
+                      ? 'Uploading to ERP...'
+                      : `Upload Direct to ERP (${existingMarks.length})`}
+                  </span>
+                </button>
+              </div>
+            </div>
           </div>
         ) : null}
 
@@ -465,6 +829,7 @@ export function CaeUploadPanel({
                 setSelectedFileName(null);
                 setSubmitError(null);
                 setSubmitSuccess(null);
+                setSubmitWarning(null);
               }}
               placeholder={
                 'CourseCode,CourseName,Credits,CAE1,CAE2,AssignLab,ClassAvg\nSCSA1601,Computer Networks,4,42,46,9,38.5\nSCSA1602,Operating Systems,4,37,41,8,36.2'
@@ -642,7 +1007,7 @@ export function CaeUploadPanel({
         ) : null}
 
         {/* Parsed Preview for File & Paste tabs */}
-        {tab !== 'manual' && parsedTextResult && parsedTextResult.marks.length > 0 ? (
+        {(tab === 'file' || tab === 'paste') && parsedTextResult && parsedTextResult.marks.length > 0 ? (
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2 text-xs">
               <span className="font-semibold text-slate-800 dark:text-slate-200">
@@ -712,12 +1077,24 @@ export function CaeUploadPanel({
 
         {/* Footer Actions */}
         <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            {hasUploadedData ? (
+          <div className="flex flex-wrap items-center gap-3">
+            {tab !== 'erp-direct' ? (
+              <label className="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={syncToErp}
+                  onChange={(e) => setSyncToErp(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-slate-300 dark:border-slate-600 accent-blue-700 cursor-pointer"
+                />
+                <span>
+                  Also upload directly to College ERP (<span className="font-mono">erp.sathyabama.ac.in</span>)
+                </span>
+              </label>
+            ) : hasUploadedData ? (
               <button
                 type="button"
                 onClick={() => void handleResetUploaded()}
-                disabled={resetting || saving}
+                disabled={busy}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50"
               >
                 <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
@@ -725,9 +1102,21 @@ export function CaeUploadPanel({
               </button>
             ) : (
               <span className="text-xs text-slate-500 dark:text-slate-400">
-                Updates KPIs, term trend, deep-dive charts, and ESE grade targets immediately.
+                Credentials are verified over HTTPS and never stored; only verified tokens stay encrypted.
               </span>
             )}
+
+            {tab !== 'erp-direct' && hasUploadedData ? (
+              <button
+                type="button"
+                onClick={() => void handleResetUploaded()}
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                {resetting ? 'Restoring...' : 'Reset to Portal Data'}
+              </button>
+            ) : null}
           </div>
 
           <div className="flex items-center gap-2.5">
@@ -736,19 +1125,25 @@ export function CaeUploadPanel({
               onClick={onClose}
               className="rounded-lg border border-slate-200 dark:border-slate-700 px-3.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
             >
-              Cancel
+              {tab === 'erp-direct' ? 'Close' : 'Cancel'}
             </button>
-            <button
-              type="button"
-              onClick={() => void handleSaveUpload()}
-              disabled={saving || activeMarks.length === 0}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-4 py-2 text-xs font-medium text-white transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
-            >
-              <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-              {saving
-                ? 'Saving CAE Marks...'
-                : `Upload & Apply (${activeMarks.length})`}
-            </button>
+            {tab !== 'erp-direct' ? (
+              <button
+                type="button"
+                onClick={() => void handleSaveUpload()}
+                disabled={busy || activeMarks.length === 0}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-4 py-2 text-xs font-medium text-white transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+              >
+                <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+                {saving
+                  ? syncToErp
+                    ? 'Uploading to ERP...'
+                    : 'Saving CAE Marks...'
+                  : syncToErp
+                    ? `Upload Direct to ERP (${activeMarks.length})`
+                    : `Upload & Apply (${activeMarks.length})`}
+              </button>
+            ) : null}
           </div>
         </div>
       </div>

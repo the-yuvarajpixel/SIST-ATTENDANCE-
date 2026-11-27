@@ -46,7 +46,19 @@ export function CommandPalette({
 
   const entries = useMemo<PaletteEntry[]>(() => {
     const base: PaletteEntry[] = [
-      { id: 'nav-overview', group: 'Navigate', label: 'Overview Dashboard', detail: 'Next class and daily summary', run: () => onNavigate('overview') },
+      { id: 'nav-overview', group: 'Navigate', label: 'Overview Dashboard', detail: 'Next class, semester CGPA calculator, and daily summary', run: () => onNavigate('overview') },
+      {
+        id: 'nav-overview-cgpa',
+        group: 'Tools',
+        label: 'Semester-Wise CGPA Calculator',
+        detail: 'Input semester grades and credit points in Overview',
+        run: () => {
+          onNavigate('overview');
+          window.setTimeout(() => {
+            document.getElementById('overview-cgpa-calculator')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }, 80);
+        },
+      },
       { id: 'nav-attendance', group: 'Navigate', label: 'Attendance & Bunk Calculator', detail: 'Check skippable classes and thresholds', run: () => onNavigate('attendance') },
       { id: 'nav-timetable', group: 'Navigate', label: 'Weekly Timetable', detail: 'Class schedule with attendance overlay', run: () => onNavigate('timetable') },
       { id: 'nav-marks', group: 'Navigate', label: 'Marks (CAE)', detail: 'Continuous assessment marks for the current term, subject by subject', run: () => onNavigate('marks') },

@@ -399,4 +399,339 @@ export function evaluateCgpaThreshold(
   };
 }
 
+export interface GradeDistributionSubjectItem {
+  courseCode: string;
+  courseName: string;
+  credits: number;
+  grade: GradeLetter;
+  gradePoints: number;
+  semester: number;
+  termLabel: string;
+  isPlanned: boolean;
+}
+
+export interface GradeDistributionBucket {
+  grade: GradeLetter;
+  gradePoints: number;
+  count: number;
+  credits: number;
+  sharePercent: number;
+  creditSharePercent: number;
+  subjects: GradeDistributionSubjectItem[];
+}
+
+export interface GradeDistributionResult {
+  buckets: GradeDistributionBucket[];
+  subjects: GradeDistributionSubjectItem[];
+  totalSubjects: number;
+  totalCredits: number;
+  topTierCount: number;
+  topTierPercent: number;
+  dominantGrade: GradeLetter | null;
+  dominantCount: number;
+  averageGradePoints: number;
+}
+
+export type GradeDistributionScope = 'all' | 'with-planned' | number;
+
+/**
+ * Computes subject grade distribution across completed semesters (and optionally
+ * the current semester's planned grades) for the ResultsView bar chart.
+ */
+export function buildGradeDistribution(
+  semesters: SemesterResult[],
+  options: {
+    scope?: GradeDistributionScope;
+    currentSemester?: number;
+    plannedCourses?: PlannedCourse[];
+  } = {}
+): GradeDistributionResult {
+  const scope = options.scope ?? 'all';
+  const sortedSemesters = [...semesters].sort((a, b) => a.semester - b.semester);
+  const subjects: GradeDistributionSubjectItem[] = [];
+
+  for (const sem of sortedSemesters) {
+    if (typeof scope === 'number' && sem.semester !== scope) continue;
+    for (const c of sem.courses) {
+      const gp = GRADE_POINTS[c.grade] ?? c.gradePoints;
+      subjects.push({
+        courseCode: c.courseCode,
+        courseName: c.courseName,
+        credits: c.credits,
+        grade: c.grade,
+        gradePoints: gp,
+        semester: sem.semester,
+        termLabel: sem.termLabel,
+        isPlanned: false,
+      });
+    }
+  }
+
+  if (scope === 'with-planned' && options.plannedCourses && options.plannedCourses.length > 0) {
+    const curSem = options.currentSemester ?? (sortedSemesters[sortedSemesters.length - 1]?.semester ?? 0) + 1;
+    for (const c of options.plannedCourses) {
+      subjects.push({
+        courseCode: c.courseCode,
+        courseName: c.courseName,
+        credits: c.credits,
+        grade: c.expectedGrade,
+        gradePoints: GRADE_POINTS[c.expectedGrade],
+        semester: curSem,
+        termLabel: `Sem ${curSem} (Plan)`,
+        isPlanned: true,
+      });
+    }
+  }
+
+  const byGrade = new Map<GradeLetter, GradeDistributionSubjectItem[]>();
+  for (const g of ORDERED_GRADES) {
+    byGrade.set(g, []);
+  }
+  for (const item of subjects) {
+    const list = byGrade.get(item.grade);
+    if (list) list.push(item);
+  }
+
+  const totalSubjects = subjects.length;
+  const totalCredits = subjects.reduce((sum, s) => sum + s.credits, 0);
+  const weightedPoints = subjects.reduce((sum, s) => sum + s.gradePoints * Math.max(1, s.credits), 0);
+  const weightDenom = subjects.reduce((sum, s) => sum + Math.max(1, s.credits), 0);
+
+  let dominantGrade: GradeLetter | null = null;
+  let dominantCount = 0;
+
+  const buckets: GradeDistributionBucket[] = ORDERED_GRADES.map((grade) => {
+    const list = byGrade.get(grade) ?? [];
+    const count = list.length;
+    const credits = list.reduce((sum, s) => sum + s.credits, 0);
+    if (count > dominantCount) {
+      dominantCount = count;
+      dominantGrade = grade;
+    }
+    return {
+      grade,
+      gradePoints: GRADE_POINTS[grade],
+      count,
+      credits,
+      sharePercent: totalSubjects > 0 ? Math.round((count / totalSubjects) * 1000) / 10 : 0,
+      creditSharePercent: totalCredits > 0 ? Math.round((credits / totalCredits) * 1000) / 10 : 0,
+      subjects: list,
+    };
+  });
+
+  const topTierCount = (byGrade.get('O')?.length ?? 0) + (byGrade.get('A+')?.length ?? 0);
+  const topTierPercent = totalSubjects > 0 ? Math.round((topTierCount / totalSubjects) * 1000) / 10 : 0;
+  const averageGradePoints = weightDenom > 0 ? round2(weightedPoints / weightDenom) : 0;
+
+  return {
+    buckets,
+    subjects,
+    totalSubjects,
+    totalCredits,
+    topTierCount,
+    topTierPercent,
+    dominantGrade,
+    dominantCount,
+    averageGradePoints,
+  };
+}
+
+export interface OverviewCalculatorCourse {
+  id: string;
+  name: string;
+  grade: GradeLetter;
+  credits: number;
+}
+
+export interface OverviewCalculatorSemester {
+  id: string;
+  semester: number;
+  inputMode: 'courses' | 'sgpa';
+  sgpa: number;
+  credits: number;
+  courses: OverviewCalculatorCourse[];
+}
+
+export interface OverviewSemesterCalcBreakdown {
+  id: string;
+  semester: number;
+  inputMode: 'courses' | 'sgpa';
+  sgpa: number;
+  credits: number;
+  gradePoints: number;
+  cumulativeCgpa: number;
+  cumulativeCredits: number;
+  courseCount: number;
+  hasArrear: boolean;
+}
+
+export interface OverviewCgpaCalculationResult {
+  overallCgpa: number;
+  totalCredits: number;
+  totalGradePoints: number;
+  equivalentPercent: number;
+  classification:
+    | 'First Class with Distinction'
+    | 'First Class'
+    | 'Second Class'
+    | 'Pass'
+    | 'Incomplete';
+  hasArrears: boolean;
+  bestSemester: OverviewSemesterCalcBreakdown | null;
+  semesters: OverviewSemesterCalcBreakdown[];
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
+}
+
+/**
+ * Computes overall CGPA and running semester-by-semester progression from
+ * user-editable semester grades and credit points (supporting both course-level
+ * grade/credit entry and direct semester SGPA/credit entry).
+ */
+export function computeOverviewSemesterCgpa(
+  semesters: OverviewCalculatorSemester[]
+): OverviewCgpaCalculationResult {
+  const ordered = [...semesters].sort((a, b) => a.semester - b.semester);
+  const breakdowns: OverviewSemesterCalcBreakdown[] = [];
+  let runningWeighted = 0;
+  let runningCredits = 0;
+  let anyArrear = false;
+  let bestSemester: OverviewSemesterCalcBreakdown | null = null;
+
+  for (const sem of ordered) {
+    let semCredits = 0;
+    let semWeighted = 0;
+    let semSgpa = 0;
+    let semHasArrear = false;
+    let courseCount = 0;
+
+    if (sem.inputMode === 'courses') {
+      for (const course of sem.courses) {
+        const cr = clamp(Number(course.credits) || 0, 0, 20);
+        if (cr <= 0) continue;
+        courseCount += 1;
+        const gp = GRADE_POINTS[course.grade] ?? 0;
+        if (course.grade === 'RA') semHasArrear = true;
+        semCredits += cr;
+        semWeighted += cr * gp;
+      }
+      semSgpa = semCredits > 0 ? round2(semWeighted / semCredits) : 0;
+    } else {
+      semCredits = clamp(Number(sem.credits) || 0, 0, 60);
+      semSgpa = clamp(Number(sem.sgpa) || 0, 0, 10);
+      semWeighted = semCredits * semSgpa;
+      semHasArrear = semCredits > 0 && semSgpa === 0;
+    }
+
+    if (semHasArrear) anyArrear = true;
+    runningCredits += semCredits;
+    runningWeighted += semWeighted;
+    const cumulativeCgpa = runningCredits > 0 ? round2(runningWeighted / runningCredits) : 0;
+
+    const item: OverviewSemesterCalcBreakdown = {
+      id: sem.id,
+      semester: sem.semester,
+      inputMode: sem.inputMode,
+      sgpa: round2(semSgpa),
+      credits: Math.round(semCredits * 10) / 10,
+      gradePoints: round2(semWeighted),
+      cumulativeCgpa,
+      cumulativeCredits: Math.round(runningCredits * 10) / 10,
+      courseCount,
+      hasArrear: semHasArrear,
+    };
+
+    breakdowns.push(item);
+    if (item.credits > 0 && (!bestSemester || item.sgpa > bestSemester.sgpa)) {
+      bestSemester = item;
+    }
+  }
+
+  const overallCgpa = runningCredits > 0 ? round2(runningWeighted / runningCredits) : 0;
+  const equivalentPercent = round2(overallCgpa * 10);
+
+  let classification: OverviewCgpaCalculationResult['classification'] = 'Incomplete';
+  if (runningCredits > 0) {
+    if (!anyArrear && overallCgpa >= 8.5) {
+      classification = 'First Class with Distinction';
+    } else if (overallCgpa >= 6.5) {
+      classification = 'First Class';
+    } else if (overallCgpa >= 5.5) {
+      classification = 'Second Class';
+    } else {
+      classification = 'Pass';
+    }
+  }
+
+  return {
+    overallCgpa,
+    totalCredits: Math.round(runningCredits * 10) / 10,
+    totalGradePoints: round2(runningWeighted),
+    equivalentPercent,
+    classification,
+    hasArrears: anyArrear,
+    bestSemester,
+    semesters: breakdowns,
+  };
+}
+
+export function seedCalculatorFromSemesters(
+  semesters: SemesterResult[]
+): OverviewCalculatorSemester[] {
+  return [...semesters]
+    .sort((a, b) => a.semester - b.semester)
+    .map((sem) => {
+      const hasCourses = sem.courses.length > 0;
+      return {
+        id: `sem-${sem.semester}`,
+        semester: sem.semester,
+        inputMode: hasCourses ? 'courses' : 'sgpa',
+        sgpa: round2(sem.sgpa),
+        credits: Math.max(0, sem.credits),
+        courses: sem.courses.map((c, idx) => ({
+          id: `sem-${sem.semester}-c-${idx + 1}`,
+          name: c.courseName || c.courseCode,
+          grade: c.grade,
+          credits: c.credits,
+        })),
+      };
+    });
+}
+
+export function createDefaultCalculatorSemesters(): OverviewCalculatorSemester[] {
+  return [
+    {
+      id: 'sem-1',
+      semester: 1,
+      inputMode: 'courses',
+      sgpa: 9.0,
+      credits: 16,
+      courses: [
+        { id: 'sem-1-c-1', name: 'Subject 1', grade: 'O', credits: 4 },
+        { id: 'sem-1-c-2', name: 'Subject 2', grade: 'A+', credits: 4 },
+        { id: 'sem-1-c-3', name: 'Subject 3', grade: 'A+', credits: 4 },
+        { id: 'sem-1-c-4', name: 'Subject 4', grade: 'A', credits: 4 },
+      ],
+    },
+    {
+      id: 'sem-2',
+      semester: 2,
+      inputMode: 'courses',
+      sgpa: 8.75,
+      credits: 16,
+      courses: [
+        { id: 'sem-2-c-1', name: 'Subject 1', grade: 'A+', credits: 4 },
+        { id: 'sem-2-c-2', name: 'Subject 2', grade: 'A+', credits: 4 },
+        { id: 'sem-2-c-3', name: 'Subject 3', grade: 'A', credits: 4 },
+        { id: 'sem-2-c-4', name: 'Subject 4', grade: 'O', credits: 4 },
+      ],
+    },
+  ];
+}
+
+
+
 

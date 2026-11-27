@@ -32,7 +32,7 @@ import type {
   SubjectCaeMark,
   TimetableSlot,
 } from './core/types';
-import { api } from './lib/api';
+import { api, type CaeUploadResponse, type ErpDirectCaeAuthInput } from './lib/api';
 
 type SectionKey =
   | 'profile'
@@ -213,9 +213,34 @@ export default function App() {
   }, []);
 
   const handleUploadCaeMarks = useCallback(
-    async (marks: SubjectCaeMark[], mode: 'replace' | 'merge') => {
-      const envelope = await api.uploadCaeMarks(marks, mode);
-      setResults({ envelope, loading: false, error: null });
+    async (
+      marks: SubjectCaeMark[],
+      mode: 'replace' | 'merge',
+      options?: { syncToErp?: boolean; erpAuth?: ErpDirectCaeAuthInput }
+    ): Promise<CaeUploadResponse> => {
+      const response = await api.uploadCaeMarks(marks, mode, options);
+      if (response.user) {
+        skipNextAutoLoad.current = true;
+        setUser(response.user);
+      }
+      setResults({ envelope: response, loading: false, error: null });
+      return response;
+    },
+    []
+  );
+
+  const handlePullCaeMarksFromErp = useCallback(
+    async (
+      mode: 'replace' | 'merge',
+      erpAuth?: ErpDirectCaeAuthInput
+    ): Promise<CaeUploadResponse> => {
+      const response = await api.pullCaeMarksFromErp(mode, erpAuth);
+      if (response.user) {
+        skipNextAutoLoad.current = true;
+        setUser(response.user);
+      }
+      setResults({ envelope: response, loading: false, error: null });
+      return response;
     },
     []
   );
@@ -627,9 +652,11 @@ export default function App() {
             {activeSection === 'marks' ? (
               <MarksView
                 section={results}
+                user={user}
                 onNavigate={setActiveSection}
                 onRetry={() => void loadSection('results', true)}
                 onUploadCaeMarks={handleUploadCaeMarks}
+                onPullCaeMarksFromErp={handlePullCaeMarksFromErp}
                 onResetCaeMarks={handleResetCaeMarks}
               />
             ) : null}

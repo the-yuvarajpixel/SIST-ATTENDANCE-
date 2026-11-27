@@ -21,16 +21,26 @@ import {
   type CaeTrendChartPoint,
   type SubjectCaeComparisonPoint,
 } from '../core/cae';
-import type { CaeStanding, NavSection, ResultsPayload, SubjectCaeMark } from '../core/types';
+import type { CaeStanding, NavSection, ResultsPayload, SessionUser, SubjectCaeMark } from '../core/types';
+import type { CaeUploadResponse, ErpDirectCaeAuthInput } from '../lib/api';
 import { CaeUploadPanel } from './CaeUploadPanel';
 import type { SectionState } from './OverviewView';
 import { SectionError, SectionSkeleton, StaleBanner } from './SectionNotice';
 
 interface MarksViewProps {
   section: SectionState<ResultsPayload>;
+  user: SessionUser;
   onNavigate: (section: NavSection) => void;
   onRetry: () => void;
-  onUploadCaeMarks: (marks: SubjectCaeMark[], mode: 'replace' | 'merge') => Promise<void>;
+  onUploadCaeMarks: (
+    marks: SubjectCaeMark[],
+    mode: 'replace' | 'merge',
+    options?: { syncToErp?: boolean; erpAuth?: ErpDirectCaeAuthInput }
+  ) => Promise<CaeUploadResponse>;
+  onPullCaeMarksFromErp: (
+    mode: 'replace' | 'merge',
+    erpAuth?: ErpDirectCaeAuthInput
+  ) => Promise<CaeUploadResponse>;
   onResetCaeMarks: () => Promise<void>;
 }
 
@@ -308,9 +318,11 @@ function AllSubjectsComparisonTooltip({ active, payload, scale }: AllSubjectsToo
 
 export function MarksView({
   section,
+  user,
   onNavigate,
   onRetry,
   onUploadCaeMarks,
+  onPullCaeMarksFromErp,
   onResetCaeMarks,
 }: MarksViewProps) {
   const [filter, setFilter] = useState<MarksFilter>('all');
@@ -507,8 +519,9 @@ export function MarksView({
           className="rounded-xl border border-blue-200 dark:border-blue-900/60 bg-blue-50/70 dark:bg-blue-950/30 px-4 py-3 text-xs text-blue-900 dark:text-blue-200 flex flex-wrap items-center justify-between gap-3"
         >
           <span>
-            Showing your uploaded Continuous Assessment (CAE) marks ({marks.length}{' '}
-            {marks.length === 1 ? 'subject' : 'subjects'}). All charts, KPIs, and ESE grade targets reflect your uploaded data.
+            {payload?.caeErpSync?.synced
+              ? payload.caeErpSync.message
+              : `Showing your uploaded Continuous Assessment (CAE) marks (${marks.length} ${marks.length === 1 ? 'subject' : 'subjects'}). All charts, KPIs, and ESE grade targets reflect your uploaded data.`}
           </span>
           <div className="flex items-center gap-3 shrink-0">
             <button
@@ -540,9 +553,12 @@ export function MarksView({
 
       {uploadOpen ? (
         <CaeUploadPanel
+          user={user}
+          currentSemester={payload?.currentSemester}
           existingMarks={marks}
           hasUploadedData={hasUploadedData}
           onUpload={onUploadCaeMarks}
+          onPullFromErp={onPullCaeMarksFromErp}
           onReset={onResetCaeMarks}
           onClose={() => setUploadOpen(false)}
         />

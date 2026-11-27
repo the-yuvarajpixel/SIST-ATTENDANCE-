@@ -2,6 +2,7 @@ import type {
   AttendanceSubject,
   DataSourceMode,
   DeadlineItem,
+  ErpCaeDirectSyncStatus,
   ErpUserRole,
   HealthReport,
   NotificationItem,
@@ -49,6 +50,20 @@ export interface AuthSessionResponse {
   user: SessionUser;
   warning?: string;
 }
+
+export interface ErpDirectCaeAuthInput {
+  erpRole?: ErpUserRole;
+  registerNumber?: string;
+  erpUsername?: string;
+  erpPassword?: string;
+  erpToken?: string;
+  semester?: number;
+}
+
+export type CaeUploadResponse = SectionEnvelope<ResultsPayload> & {
+  erpSync?: ErpCaeDirectSyncStatus;
+  user?: SessionUser;
+};
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -139,15 +154,36 @@ export const api = {
     return requestJson<SectionEnvelope<ResultsPayload>>(`/api/portal/results${refresh ? '?refresh=1' : ''}`);
   },
 
-  uploadCaeMarks(marks: SubjectCaeMark[], mode: 'replace' | 'merge' = 'merge') {
-    return requestJson<SectionEnvelope<ResultsPayload>>('/api/portal/cae-marks', {
+  uploadCaeMarks(
+    marks: SubjectCaeMark[],
+    mode: 'replace' | 'merge' = 'merge',
+    options?: { syncToErp?: boolean; erpAuth?: ErpDirectCaeAuthInput }
+  ) {
+    return requestJson<CaeUploadResponse>('/api/portal/cae-marks', {
       method: 'POST',
-      body: JSON.stringify({ action: 'upload', mode, marks }),
+      body: JSON.stringify({
+        action: 'upload',
+        mode,
+        marks,
+        syncToErp: Boolean(options?.syncToErp),
+        ...(options?.erpAuth ?? {}),
+      }),
+    });
+  },
+
+  pullCaeMarksFromErp(mode: 'replace' | 'merge' = 'replace', erpAuth?: ErpDirectCaeAuthInput) {
+    return requestJson<CaeUploadResponse>('/api/portal/cae-marks', {
+      method: 'POST',
+      body: JSON.stringify({
+        action: 'erp-pull',
+        mode,
+        ...(erpAuth ?? {}),
+      }),
     });
   },
 
   resetCaeMarks() {
-    return requestJson<SectionEnvelope<ResultsPayload>>('/api/portal/cae-marks', {
+    return requestJson<CaeUploadResponse>('/api/portal/cae-marks', {
       method: 'POST',
       body: JSON.stringify({ action: 'reset' }),
     });

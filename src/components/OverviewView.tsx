@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, CalendarClock, TrendingDown, TrendingUp } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Calculator, CalendarClock, TrendingDown, TrendingUp } from 'lucide-react';
 import {
   Area,
   CartesianGrid,
@@ -31,6 +31,7 @@ import type {
   TimetableSlot,
 } from '../core/types';
 import { formatExamDateTime, formatInr, formatRelativeDue, formatShortDate } from '../lib/format';
+import { OverviewCgpaCalculator } from './OverviewCgpaCalculator';
 import { SectionError, SectionSkeleton, StaleBanner } from './SectionNotice';
 
 export interface SectionState<T> {
@@ -264,8 +265,20 @@ export function OverviewView({
   const staleErpFetchedAt =
     attendance.envelope?.fetchedAt || timetable.envelope?.fetchedAt || profile.envelope?.fetchedAt;
 
+  const studentProfile = profile.envelope?.data ?? null;
+  const firstName = studentProfile?.name?.trim().split(/\s+/)[0] ?? null;
+  const hour = now.getHours();
+  const timeGreeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+
+  function scrollToCgpaCalculator() {
+    const el = document.getElementById('overview-cgpa-calculator');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <StaleBanner
         warning={staleErpWarning}
         fetchedAt={staleErpFetchedAt}
@@ -277,10 +290,54 @@ export function OverviewView({
         }}
       />
 
+      {/* Contextual Academic Greeting Strip */}
+      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="font-display text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-50">
+            {firstName ? `${timeGreeting}, ${firstName}` : `${timeGreeting}`}
+          </h2>
+          <p className="mt-0.5 text-xs sm:text-sm text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            {studentProfile ? (
+              <>
+                <span className="truncate">{studentProfile.program}</span>
+                <span aria-hidden="true">·</span>
+                <span className="font-mono tabular-nums whitespace-nowrap">
+                  Sem {studentProfile.semester}
+                </span>
+                <span aria-hidden="true">·</span>
+                <span className="font-mono tabular-nums whitespace-nowrap">
+                  Reg {studentProfile.registerNumber}
+                </span>
+              </>
+            ) : (
+              <span>Daily academic overview across College ERP and Moodle LMS</span>
+            )}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={scrollToCgpaCalculator}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
+          >
+            <Calculator className="h-3.5 w-3.5 text-blue-700 dark:text-blue-400" aria-hidden="true" />
+            CGPA Calculator
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('marks')}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
+          >
+            CAE Marks
+          </button>
+        </div>
+      </div>
+
       {/* Focal Anchor: Next Class Hero Surface */}
       <section
         aria-label="Next scheduled class"
-        className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 sm:p-7"
+        className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-gradient-to-br from-white via-white to-slate-50/90 dark:from-slate-900 dark:via-slate-900 dark:to-slate-950/80 p-6 sm:p-7"
       >
         {timetable.loading && !timetable.envelope ? (
           <SectionSkeleton rows={2} />
@@ -295,9 +352,9 @@ export function OverviewView({
             <div className="space-y-2.5 min-w-0">
               <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
                 <CalendarClock className="h-3.5 w-3.5 text-blue-700 dark:text-blue-400 shrink-0" aria-hidden="true" />
-                <span className="font-medium text-blue-700 dark:text-blue-400">Next class</span>
+                <span className="font-semibold text-blue-700 dark:text-blue-400">Next class</span>
                 <span aria-hidden="true">·</span>
-                <span className="font-mono tabular-nums">
+                <span className="font-mono tabular-nums text-slate-700 dark:text-slate-300">
                   {nextClass.dayLabel} {nextClass.slot.startTime}–{nextClass.slot.endTime}
                 </span>
                 <span aria-hidden="true">·</span>
@@ -306,9 +363,9 @@ export function OverviewView({
                 <span>{nextClass.slot.kind}</span>
               </div>
 
-              <h2 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-slate-50">
+              <h3 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-slate-50">
                 {nextClass.slot.courseName}
-              </h2>
+              </h3>
 
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-600 dark:text-slate-400">
                 <span className="font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
@@ -339,7 +396,7 @@ export function OverviewView({
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-3 shrink-0">
+            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
               <button
                 type="button"
                 onClick={() => onNavigate('attendance')}
@@ -351,7 +408,7 @@ export function OverviewView({
               <button
                 type="button"
                 onClick={() => onNavigate('timetable')}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 px-4 py-2.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-2.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
               >
                 Full Timetable
               </button>
@@ -367,13 +424,28 @@ export function OverviewView({
         <button
           type="button"
           onClick={() => onNavigate('attendance')}
-          className="text-left rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 hover:border-slate-300 dark:hover:border-slate-700 transition-colors cursor-pointer"
+          className="group text-left rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 hover:border-blue-300 dark:hover:border-blue-700/70 transition-colors cursor-pointer"
         >
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Overall Attendance</p>
-          <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-slate-900 dark:text-slate-50">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Overall Attendance</p>
+            <ArrowUpRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-blue-700 dark:group-hover:text-blue-400 transition-colors shrink-0" aria-hidden="true" />
+          </div>
+          <p className="mt-2 font-mono text-2xl font-bold tabular-nums text-slate-900 dark:text-slate-50">
             {attendance.loading && !attendance.envelope ? '—' : `${overallAttendance.overallPercentage.toFixed(1)}%`}
           </p>
-          <p className="mt-1.5 text-xs text-slate-600 dark:text-slate-400 tabular-nums">
+          <div className="mt-2 h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden" aria-hidden="true">
+            <div
+              className={`h-full rounded-full ${
+                overallAttendance.shortageCount > 0
+                  ? 'bg-amber-500 dark:bg-amber-400'
+                  : 'bg-emerald-600 dark:bg-emerald-500'
+              }`}
+              style={{
+                width: `${Math.min(100, Math.max(0, overallAttendance.overallPercentage))}%`,
+              }}
+            />
+          </div>
+          <p className="mt-2 text-xs text-slate-600 dark:text-slate-400 tabular-nums">
             {overallAttendance.shortageCount > 0 ? (
               <span className="text-red-700 dark:text-red-400 font-medium">
                 {overallAttendance.shortageCount} subject{overallAttendance.shortageCount > 1 ? 's' : ''} below {attendanceTarget}%
@@ -388,30 +460,44 @@ export function OverviewView({
 
         <button
           type="button"
-          onClick={() => onNavigate('results')}
-          className="text-left rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 hover:border-slate-300 dark:hover:border-slate-700 transition-colors cursor-pointer"
+          onClick={scrollToCgpaCalculator}
+          className="group text-left rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 hover:border-blue-300 dark:hover:border-blue-700/70 transition-colors cursor-pointer"
         >
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Estimated CGPA</p>
-          <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-slate-900 dark:text-slate-50">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Overall CGPA</p>
+            <ArrowUpRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-blue-700 dark:group-hover:text-blue-400 transition-colors shrink-0" aria-hidden="true" />
+          </div>
+          <p className="mt-2 font-mono text-2xl font-bold tabular-nums text-slate-900 dark:text-slate-50">
             {results.loading && !results.envelope ? '—' : cgpaSummary ? cgpaSummary.cgpa.toFixed(2) : '—'}
           </p>
-          <p className="mt-1.5 text-xs text-slate-600 dark:text-slate-400 tabular-nums">
+          <div className="mt-2 h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden" aria-hidden="true">
+            <div
+              className="h-full rounded-full bg-blue-700 dark:bg-blue-500"
+              style={{
+                width: `${Math.min(100, Math.max(0, ((cgpaSummary?.cgpa ?? 0) / 10) * 100))}%`,
+              }}
+            />
+          </div>
+          <p className="mt-2 text-xs text-slate-600 dark:text-slate-400 tabular-nums truncate">
             {cgpaSummary?.bestSemester
               ? `Best ${cgpaSummary.bestSemester.sgpa.toFixed(2)} (Sem ${cgpaSummary.bestSemester.semester}) · ${cgpaSummary.completedCredits} cr`
-              : 'Grade history'}
+              : 'Calculate below'}
           </p>
         </button>
 
         <button
           type="button"
           onClick={() => onNavigate('deadlines')}
-          className="text-left rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 hover:border-slate-300 dark:hover:border-slate-700 transition-colors cursor-pointer"
+          className="group text-left rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 hover:border-blue-300 dark:hover:border-blue-700/70 transition-colors cursor-pointer"
         >
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Active Deadlines</p>
-          <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-slate-900 dark:text-slate-50">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Active Deadlines</p>
+            <ArrowUpRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-blue-700 dark:group-hover:text-blue-400 transition-colors shrink-0" aria-hidden="true" />
+          </div>
+          <p className="mt-2 font-mono text-2xl font-bold tabular-nums text-slate-900 dark:text-slate-50">
             {deadlines.loading && !deadlines.envelope ? '—' : openDeadlines.length}
           </p>
-          <p className="mt-1.5 text-xs text-slate-600 dark:text-slate-400 truncate">
+          <p className="mt-3.5 text-xs text-slate-600 dark:text-slate-400 truncate">
             {openDeadlines[0]
               ? `Next: ${formatRelativeDue(openDeadlines[0].dueAt).label}`
               : 'All caught up'}
@@ -421,17 +507,28 @@ export function OverviewView({
         <button
           type="button"
           onClick={() => onNavigate('notifications')}
-          className="text-left rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 hover:border-slate-300 dark:hover:border-slate-700 transition-colors cursor-pointer"
+          className="group text-left rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 hover:border-blue-300 dark:hover:border-blue-700/70 transition-colors cursor-pointer"
         >
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Unread Notices</p>
-          <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-slate-900 dark:text-slate-50">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Unread Notices</p>
+            <ArrowUpRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-blue-700 dark:group-hover:text-blue-400 transition-colors shrink-0" aria-hidden="true" />
+          </div>
+          <p className="mt-2 font-mono text-2xl font-bold tabular-nums text-slate-900 dark:text-slate-50">
             {notifications.loading && !notifications.envelope ? '—' : unreadNotices.length}
           </p>
-          <p className="mt-1.5 text-xs text-slate-600 dark:text-slate-400">
+          <p className="mt-3.5 text-xs text-slate-600 dark:text-slate-400 truncate">
             ERP circulars &amp; Moodle LMS
           </p>
         </button>
       </section>
+
+      {/* Interactive Semester-Wise CGPA Calculator Tool */}
+      <OverviewCgpaCalculator
+        erpSemesters={resultsData?.semesters ?? []}
+        erpCgpa={cgpaSummary?.cgpa ?? null}
+        loading={results.loading && !results.envelope}
+        onNavigate={onNavigate}
+      />
 
       {/* Weekly Attendance Fluctuations Trend Line Chart */}
       <section
@@ -943,8 +1040,8 @@ export function OverviewView({
             {/* Prioritized Courses List */}
             <div>
               <div className="px-5 py-2.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4">
-                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                  Courses to prioritize
+                <p className="text-xs font-semibold text-slate-600 dark:text-slate-400">
+                  Courses to Prioritize
                 </p>
                 {attendanceInsights.priorityCourses.length > 3 ? (
                   <button

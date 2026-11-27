@@ -31,6 +31,7 @@ import {
   exchangeErpCredentialsForToken,
   exchangeMoodleCredentialsForToken,
   fetchLiveAttendance,
+  fetchLiveCaeMarksDirect,
   fetchLiveDeadlines,
   fetchLiveNotifications,
   fetchLiveProfile,
@@ -38,6 +39,7 @@ import {
   fetchLiveTimetable,
   getLiveAdapterConfig,
   probeUpstreamReachability,
+  uploadLiveCaeMarksToErp,
   verifyErpToken,
   verifyMoodleToken,
 } from './src/server/liveAdapters';
@@ -1112,22 +1114,170 @@ export function createApp() {
     }
   });
 
-  // Upload or reset custom Continuous Assessment (CAE) marks for the current authenticated session
+  // Upload, pull directly from College ERP, push directly to College ERP, or reset CAE marks
   app.post('/api/portal/cae-marks', async (req, res) => {
-    const session = resolveActiveSession(req, res);
-    if (!session) {
-      res.status(401).json({ error: 'Sign in required to upload CAE marks.' });
+    const initialSession = resolveActiveSession(req, res);
+    if (!initialSession) {
+      res.status(401).json({ error: 'Sign in required to manage CAE marks.' });
       return;
     }
-    const userHash = TwoTierCache.hashUserKey(
-      JSON.stringify([session.registerNumber, session.name, session.exp])
-    );
+
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const action = body.action === 'reset' ? 'reset' : 'upload';
+    const action =
+      body.action === 'reset'
+        ? 'reset'
+        : body.action === 'erp-pull'
+          ? 'erp-pull'
+          : 'upload';
+    const syncToErp = body.syncToErp === true;
+    const requestedSemester =
+      typeof body.semester === 'number' && Number.isInteger(body.semester) && body.semester >= 1 && body.semester <= 12
+        ? body.semester
+        : undefined;
+
+    // Optional inline ERP credentials/token so users can connect & sync directly from MarksView
+    const rawErpToken = normalizePastedToken(body.erpToken);
+    const erpUsername = typeof body.erpUsername === 'string' ? body.erpUsername.trim() : '';
+    const erpPassword = typeof body.erpPassword === 'string' ? body.erpPassword : '';
+    const erpRole: ErpUserRole = body.erpRole ? parseErpRole(body.erpRole) : (initialSession.erpRole ?? 'student');
+    const regInput =
+      typeof body.registerNumber === 'string' && body.registerNumber.trim()
+        ? body.registerNumber.trim()
+        : initialSession.registerNumber;
+    const supplyingInlineErpAuth = Boolean(rawErpToken || erpUsername || erpPassword);
+
+    let activeSession: StoredSession = initialSession;
+    let upgradedUser: ReturnType<typeof toPublicUser> | undefined;
 
     try {
+      if (supplyingInlineErpAuth) {
+        const ip = req.ip || 'local';
+        if (!checkLoginRateLimit(ip)) {
+          res.status(429).json({ error: 'Too many ERP sign-in attempts. Please wait a minute and try again.' });
+          return;
+        }
+        if (!isValidPortalId(regInput, erpRole)) {
+          res.status(400).json({ error: 'Enter a valid Sathyabama register number or staff ID.' });
+          return;
+        }
+        let verifiedToken = rawErpToken;
+        let verifiedName: string | undefined;
+        let verifiedStudentId: string | undefined;
+
+        if (verifiedToken) {
+          if (verifiedToken.length < 8 || verifiedToken.length > MAX_TOKEN_LENGTH) {
+            res.status(400).json({ error: `ERP Access-Token must be 8–${MAX_TOKEN_LENGTH} characters.` });
+            return;
+          }
+          const erpProfile = await verifyErpToken(
+            verifiedToken,
+            regInput.toUpperCase(),
+            initialSession.mode === 'live' ? initialSession.name : undefined,
+            Boolean(initialSession.mode === 'live' && initialSession.lmsToken)
+          );
+          verifiedName = erpProfile.name;
+          verifiedStudentId = erpProfile.erpStudentId;
+        } else {
+          const effectiveUser = erpUsername || regInput;
+          if (!effectiveUser || effectiveUser.length > 150) {
+            res.status(400).json({ error: 'Enter your College ERP username or register number.' });
+            return;
+          }
+          if (!erpPassword) {
+            res.status(400).json({ error: 'Enter your College ERP password or paste an ERP Access-Token.' });
+            return;
+          }
+          if (erpPassword.length > 256) {
+            res.status(400).json({ error: 'Password exceeds maximum allowed length.' });
+            return;
+          }
+          const exchanged = await exchangeErpCredentialsForToken(effectiveUser, erpPassword, { role: erpRole });
+          verifiedToken = exchanged.token;
+          verifiedName = exchanged.studentName;
+          verifiedStudentId = exchanged.studentId;
+        }
+
+        const oldHash = TwoTierCache.hashUserKey(
+          JSON.stringify([initialSession.registerNumber, initialSession.name, initialSession.exp])
+        );
+        const existingCustom = uploadedCaeMarks.get(oldHash);
+        cache.clearUser(oldHash);
+        uploadedCaeMarks.delete(oldHash);
+
+        activeSession = writeSessionCookie(req, res, {
+          registerNumber: regInput.toUpperCase(),
+          name: (verifiedName || (initialSession.mode === 'live' ? initialSession.name : regInput.toUpperCase())).slice(
+            0,
+            100
+          ),
+          mode: 'live',
+          erpRole,
+          erpToken: verifiedToken,
+          erpStudentId: verifiedStudentId,
+          lmsToken: initialSession.mode === 'live' ? initialSession.lmsToken : undefined,
+          lmsUserId: initialSession.mode === 'live' ? initialSession.lmsUserId : undefined,
+        });
+        upgradedUser = toPublicUser(activeSession);
+
+        if (existingCustom && existingCustom.length > 0 && action === 'upload') {
+          const newHash = TwoTierCache.hashUserKey(
+            JSON.stringify([activeSession.registerNumber, activeSession.name, activeSession.exp])
+          );
+          uploadedCaeMarks.set(newHash, existingCustom);
+        }
+      }
+
+      const userHash = TwoTierCache.hashUserKey(
+        JSON.stringify([activeSession.registerNumber, activeSession.name, activeSession.exp])
+      );
+
+      let erpSync:
+        | {
+            direction: 'pull' | 'push';
+            attempted: boolean;
+            synced: boolean;
+            host: string;
+            syncedAt: string;
+            subjectCount: number;
+            message: string;
+          }
+        | undefined;
+
       if (action === 'reset') {
         uploadedCaeMarks.delete(userHash);
+      } else if (action === 'erp-pull') {
+        const mode: 'replace' | 'merge' = body.mode === 'merge' ? 'merge' : 'replace';
+        if (activeSession.mode !== 'live' || !activeSession.erpToken) {
+          res.status(400).json({
+            error:
+              'Connect your College ERP account (enter your ERP credentials or Access-Token) to pull CAE marks directly from erp.sathyabama.ac.in.',
+          });
+          return;
+        }
+        const pulled = await fetchLiveCaeMarksDirect(activeSession, { semester: requestedSemester });
+        const validatedPulled = validateCaeMarks(pulled.marks);
+        if (validatedPulled.length === 0) {
+          res.status(404).json({
+            error: `Connected to ${pulled.host}, but no published CAE marks were returned for ${activeSession.registerNumber} yet.`,
+          });
+          return;
+        }
+        const existingMarks = mode === 'merge' ? (uploadedCaeMarks.get(userHash) ?? []) : [];
+        const nextMarks = mergeCaeMarks(existingMarks, validatedPulled, mode);
+        if (uploadedCaeMarks.size >= 2048 && !uploadedCaeMarks.has(userHash)) {
+          const oldestKey = uploadedCaeMarks.keys().next().value;
+          if (oldestKey) uploadedCaeMarks.delete(oldestKey);
+        }
+        uploadedCaeMarks.set(userHash, nextMarks);
+        erpSync = {
+          direction: 'pull',
+          attempted: true,
+          synced: true,
+          host: pulled.host,
+          syncedAt: pulled.syncedAt,
+          subjectCount: validatedPulled.length,
+          message: `Imported ${validatedPulled.length} CAE subject record${validatedPulled.length === 1 ? '' : 's'} directly from ${pulled.host}.`,
+        };
       } else {
         const mode: 'replace' | 'merge' = body.mode === 'merge' ? 'merge' : 'replace';
         const validatedMarks = validateCaeMarks(body.marks);
@@ -1149,7 +1299,7 @@ export function createApp() {
                 CACHE_TTL_MS,
                 async () => {
                   const raw =
-                    session.mode === 'live' ? await fetchLiveResults(session) : buildMockResults();
+                    activeSession.mode === 'live' ? await fetchLiveResults(activeSession) : buildMockResults();
                   return validateResults(raw);
                 }
               );
@@ -1166,6 +1316,27 @@ export function createApp() {
           if (oldestKey) uploadedCaeMarks.delete(oldestKey);
         }
         uploadedCaeMarks.set(userHash, nextMarks);
+
+        if (syncToErp) {
+          const liveConfig = getLiveAdapterConfig();
+          const host = liveConfig.erpHost ?? 'erp.sathyabama.ac.in';
+          if (activeSession.mode === 'live' && activeSession.erpToken) {
+            erpSync = await uploadLiveCaeMarksToErp(activeSession, validatedMarks, {
+              semester: requestedSemester,
+              mode,
+            });
+          } else {
+            erpSync = {
+              direction: 'push',
+              attempted: false,
+              synced: false,
+              host,
+              syncedAt: new Date().toISOString(),
+              subjectCount: validatedMarks.length,
+              message: `Applied ${validatedMarks.length} subject record${validatedMarks.length === 1 ? '' : 's'} to your dashboard. Sign in under the ERP Portal Direct tab to push directly to ${host}.`,
+            };
+          }
+        }
       }
 
       // Refresh cached results payload with the updated CAE marks
@@ -1177,7 +1348,7 @@ export function createApp() {
           CACHE_TTL_MS,
           async () => {
             const raw =
-              session.mode === 'live' ? await fetchLiveResults(session) : buildMockResults();
+              activeSession.mode === 'live' ? await fetchLiveResults(activeSession) : buildMockResults();
             return validateResults(raw);
           },
           { forceRefresh: action === 'reset' }
@@ -1187,27 +1358,39 @@ export function createApp() {
         // Allow uploading CAE marks even if live ERP results endpoint is unavailable
         basePayload = {
           semesters: [],
-          currentSemester: 1,
+          currentSemester: requestedSemester ?? 1,
           currentCourses: [],
           caeMarks: [],
           caeHistory: [],
         };
       }
 
-      const nextPayload =
+      const nextPayload: ResultsPayload =
         action === 'reset'
-          ? { ...basePayload, caeMarksUploaded: false }
-          : applyUploadedCaeOverlay(userHash, basePayload);
+          ? { ...basePayload, caeMarksUploaded: false, caeErpSync: undefined }
+          : {
+              ...applyUploadedCaeOverlay(userHash, basePayload),
+              ...(erpSync ? { caeErpSync: erpSync } : {}),
+            };
 
-      const envelope: SectionEnvelope<ResultsPayload> = {
+      const envelope: SectionEnvelope<ResultsPayload> & {
+        erpSync?: typeof erpSync;
+        user?: ReturnType<typeof toPublicUser>;
+      } = {
         data: nextPayload,
         stale: false,
         fetchedAt: new Date().toISOString(),
         source: 'ERP',
-        mode: session.mode,
+        mode: activeSession.mode,
+        ...(erpSync ? { erpSync } : {}),
+        ...(upgradedUser ? { user: upgradedUser } : {}),
       };
       res.json(envelope);
     } catch (err) {
+      if (err instanceof LiveUpstreamError) {
+        res.status(err.status).json({ error: err.message, code: err.code });
+        return;
+      }
       if (err instanceof SchemaValidationError) {
         res.status(400).json({ error: err.message });
         return;
