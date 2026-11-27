@@ -1,5 +1,12 @@
 import { useMemo, useState } from 'react';
-import { Award, BookOpen, RotateCcw, SlidersHorizontal } from 'lucide-react';
+import {
+  Award,
+  BookOpen,
+  CloudDownload,
+  RefreshCw,
+  RotateCcw,
+  SlidersHorizontal,
+} from 'lucide-react';
 import {
   buildMarksEngineSemesters,
   computeEngineCumulativeCgpa,
@@ -15,6 +22,9 @@ import type { GradeLetter, ResultsPayload } from '../core/types';
 interface MarksCgpaEnginePanelProps {
   payload: ResultsPayload | null;
   isLiveMode: boolean;
+  erpTokenPresent?: boolean;
+  pullingFromErp?: boolean;
+  onPullFromErp?: () => void;
 }
 
 type MarksSubTab = 'internal' | 'results';
@@ -41,16 +51,24 @@ function toneBorderBgClass(tone: SemanticTone): string {
   return 'border-rose-200 dark:border-rose-900/60 bg-rose-50/70 dark:bg-rose-950/30 text-rose-800 dark:text-rose-300';
 }
 
+function formatNumericScore(val: number | null): string {
+  if (val === null) return 'Pending';
+  return Number.isInteger(val) ? String(val) : val.toFixed(1);
+}
+
 export function MarksCgpaEnginePanel({
   payload,
   isLiveMode,
+  erpTokenPresent = false,
+  pullingFromErp = false,
+  onPullFromErp,
 }: MarksCgpaEnginePanelProps) {
   const semesters = useMemo(
     () => buildMarksEngineSemesters(payload, isLiveMode),
     [payload, isLiveMode]
   );
 
-  const [selectedSemId, setSelectedSemId] = useState<string>(() => semesters[0]?.id ?? 'sem-5');
+  const [selectedSemId, setSelectedSemId] = useState<string>(() => semesters[0]?.id ?? '');
   const [subTab, setSubTab] = useState<MarksSubTab>('internal');
   const [simulatorEnabled, setSimulatorEnabled] = useState(false);
   const [gradeOverrides, setGradeOverrides] = useState<
@@ -101,7 +119,15 @@ export function MarksCgpaEnginePanel({
   const cgpaDelta =
     Math.round((effectiveCumulative.cgpa - baselineCumulative.cgpa) * 100) / 100;
 
-  function handleGradeChange(courseCode: string, originalGrade: GradeLetter, nextGrade: GradeLetter) {
+  const isLiveErpCae = Boolean(
+    (isLiveMode && erpTokenPresent) || payload?.caeErpSync?.synced
+  );
+
+  function handleGradeChange(
+    courseCode: string,
+    originalGrade: GradeLetter,
+    nextGrade: GradeLetter
+  ) {
     setGradeOverrides((prev) => {
       const semMap = { ...(prev[activeSemester.id] ?? {}) };
       if (nextGrade === originalGrade) {
@@ -135,9 +161,56 @@ export function MarksCgpaEnginePanel({
       aria-label="Marks and CGPA Engine"
       className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden"
     >
+      {/* ERP Portal CAE Result Source Banner */}
+      <div className="px-5 py-3 sm:px-6 border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs min-w-0">
+          <span
+            className={`font-semibold ${
+              isLiveErpCae
+                ? 'text-emerald-700 dark:text-emerald-400'
+                : 'text-slate-800 dark:text-slate-200'
+            }`}
+          >
+            {isLiveErpCae
+              ? 'Live ERP CAE Result (erp.sathyabama.ac.in)'
+              : 'Synced from Portal CAE Result'}
+          </span>
+          <span className="text-slate-400 dark:text-slate-600" aria-hidden="true">
+            ·
+          </span>
+          <span className="text-slate-500 dark:text-slate-400">
+            {isLiveErpCae
+              ? `${activeSemester.courses.length} subjects loaded directly from your ERP CAE result`
+              : 'Showing your active CAE result subjects — pull live from erp.sathyabama.ac.in anytime'}
+          </span>
+        </div>
+
+        {onPullFromErp ? (
+          <button
+            type="button"
+            disabled={pullingFromErp}
+            onClick={onPullFromErp}
+            className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 dark:bg-emerald-600 dark:hover:bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 self-start sm:self-auto"
+          >
+            {pullingFromErp ? (
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <CloudDownload className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            <span>
+              {pullingFromErp
+                ? 'Pulling CAE from ERP...'
+                : isLiveErpCae
+                  ? 'Refresh ERP CAE Result'
+                  : 'Pull My CAE Result from ERP'}
+            </span>
+          </button>
+        ) : null}
+      </div>
+
       {/* Top Control Header: Semester Selector + Sub-Tab Toggle + What-If Simulator */}
       <div className="px-5 py-4 sm:px-6 sm:py-5 border-b border-slate-200 dark:border-slate-800 space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="flex flex-col gap-3">
           <div className="space-y-1 min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="font-display text-lg sm:text-xl font-bold tracking-tight text-slate-900 dark:text-slate-50">
@@ -148,36 +221,34 @@ export function MarksCgpaEnginePanel({
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Internal CAE 1, CAE 2 &amp; Assignment breakdown (/50) and 10-point Semester Results with live What-If grade simulation.
+              Powered by your ERP Portal CAE Result (CAE 1, CAE 2 &amp; Assignment /50) and 10-point Semester Results with live What-If grade simulation.
             </p>
           </div>
 
           {/* Semester Selector */}
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <div
-              role="group"
-              aria-label="Select semester"
-              className="inline-flex flex-wrap items-center rounded-lg bg-slate-100 dark:bg-slate-800 p-1"
-            >
-              {semesters.map((sem) => {
-                const active = sem.id === activeSemester.id;
-                return (
-                  <button
-                    key={sem.id}
-                    type="button"
-                    onClick={() => setSelectedSemId(sem.id)}
-                    aria-pressed={active}
-                    className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
-                      active
-                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
-                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                    }`}
-                  >
-                    {sem.label}
-                  </button>
-                );
-              })}
-            </div>
+          <div
+            role="group"
+            aria-label="Select semester"
+            className="inline-flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 dark:bg-slate-800 p-1 self-start"
+          >
+            {semesters.map((sem) => {
+              const active = sem.id === activeSemester.id;
+              return (
+                <button
+                  key={sem.id}
+                  type="button"
+                  onClick={() => setSelectedSemId(sem.id)}
+                  aria-pressed={active}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                    active
+                      ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-50 shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                  }`}
+                >
+                  {sem.label}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -311,7 +382,7 @@ export function MarksCgpaEnginePanel({
 
         <div className="px-4 py-3.5 sm:px-5">
           <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-            Internal Avg
+            ERP Internal Avg
           </p>
           <div className="mt-1 flex items-baseline gap-1.5">
             <span className="font-mono text-xl sm:text-2xl font-bold tabular-nums text-slate-900 dark:text-slate-50">
@@ -348,8 +419,12 @@ export function MarksCgpaEnginePanel({
       {subTab === 'internal' ? (
         <div className="divide-y divide-slate-200 dark:divide-slate-800">
           {activeSemester.courses.map((course) => {
-            const tone = getInternalStatusTone(course.internalTotal);
-            const pct = Math.min(100, Math.max(0, (course.internalTotal / 50) * 100));
+            const normalizedOutOf50 =
+              course.internalMax > 0
+                ? (course.internalTotal / course.internalMax) * 50
+                : course.internalTotal;
+            const tone = getInternalStatusTone(normalizedOutOf50);
+            const pct = Math.min(100, Math.max(0, (normalizedOutOf50 / 50) * 100));
 
             return (
               <div
@@ -370,7 +445,10 @@ export function MarksCgpaEnginePanel({
                       <span className={`font-mono text-lg font-bold tabular-nums ${toneTextClass(tone)}`}>
                         {course.internalTotal.toFixed(1)}
                       </span>
-                      <span className="font-mono text-xs text-slate-400 dark:text-slate-500"> / 50</span>
+                      <span className="font-mono text-xs text-slate-400 dark:text-slate-500">
+                        {' '}
+                        / {course.internalMax}
+                      </span>
                     </div>
                   </div>
 
@@ -386,25 +464,35 @@ export function MarksCgpaEnginePanel({
                   <div>
                     <p className="text-[11px] font-sans text-slate-500 dark:text-slate-400">CAE 1</p>
                     <p className="font-semibold text-slate-900 dark:text-slate-100">
-                      {course.cae1} <span className="text-slate-400 font-normal">/50</span>
+                      {formatNumericScore(course.cae1)}
+                      {course.cae1 !== null ? (
+                        <span className="text-slate-400 font-normal"> /{course.cae1Max}</span>
+                      ) : null}
                     </p>
                   </div>
                   <div>
                     <p className="text-[11px] font-sans text-slate-500 dark:text-slate-400">CAE 2</p>
                     <p className="font-semibold text-slate-900 dark:text-slate-100">
-                      {course.cae2} <span className="text-slate-400 font-normal">/50</span>
+                      {formatNumericScore(course.cae2)}
+                      {course.cae2 !== null ? (
+                        <span className="text-slate-400 font-normal"> /{course.cae2Max}</span>
+                      ) : null}
                     </p>
                   </div>
                   <div>
                     <p className="text-[11px] font-sans text-slate-500 dark:text-slate-400">Assignment</p>
                     <p className="font-semibold text-slate-900 dark:text-slate-100">
-                      {course.assignment} <span className="text-slate-400 font-normal">/10</span>
+                      {formatNumericScore(course.assignment)}
+                      {course.assignment !== null ? (
+                        <span className="text-slate-400 font-normal"> /{course.assignmentMax}</span>
+                      ) : null}
                     </p>
                   </div>
                   <div className="hidden md:block text-right min-w-[78px]">
                     <p className="text-[11px] font-sans text-slate-500 dark:text-slate-400">Total</p>
                     <p className={`text-sm font-bold ${toneTextClass(tone)}`}>
-                      {course.internalTotal.toFixed(1)} <span className="text-slate-400 font-normal text-xs">/50</span>
+                      {course.internalTotal.toFixed(1)}{' '}
+                      <span className="text-slate-400 font-normal text-xs">/{course.internalMax}</span>
                     </p>
                   </div>
                 </div>
@@ -439,7 +527,9 @@ export function MarksCgpaEnginePanel({
                       <span aria-hidden="true">·</span>
                       <span>{course.credits} credits</span>
                       <span aria-hidden="true">·</span>
-                      <span className="tabular-nums">Internal {course.internalTotal.toFixed(1)}/50</span>
+                      <span className="tabular-nums">
+                        ERP Internal {course.internalTotal.toFixed(1)}/{course.internalMax}
+                      </span>
                     </div>
                     <h3 className="mt-0.5 text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
                       {course.courseName}
@@ -457,7 +547,11 @@ export function MarksCgpaEnginePanel({
                         </p>
                       ) : (
                         <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                          {effectiveGrade === 'RA' ? 'Reappear' : 'Pass'}
+                          {effectiveGrade === 'RA'
+                            ? 'Reappear'
+                            : activeSemester.isCaeTerm
+                              ? 'Projected'
+                              : 'Pass'}
                         </p>
                       )}
                     </div>

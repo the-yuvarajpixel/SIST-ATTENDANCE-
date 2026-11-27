@@ -643,7 +643,13 @@ export function MarksView({
         </div>
       </section>
 
-      <MarksCgpaEnginePanel payload={payload} isLiveMode={user.mode === 'live'} />
+      <MarksCgpaEnginePanel
+        payload={payload}
+        isLiveMode={user.mode === 'live'}
+        erpTokenPresent={user.erpTokenPresent}
+        pullingFromErp={pullingDirectErp}
+        onPullFromErp={() => void handleDirectErpCaeUpdate()}
+      />
 
       {directErpNotice ? (
         <div

@@ -32,6 +32,7 @@ import {
 } from './attendance';
 import {
   SATHYABAMA_MARKS_SEMESTERS,
+  buildMarksEngineSemesters,
   computeEngineCumulativeCgpa,
   computeEngineSemesterStats,
   computeInternalOutOf50,
@@ -1155,6 +1156,72 @@ test('marksEngine computes /50 internals, 10-point SGPA/CGPA, RA arrears, and li
   assert.equal(getGradeStatusTone('O'), 'safe');
   assert.equal(getGradeStatusTone('B+'), 'borderline');
   assert.equal(getGradeStatusTone('RA'), 'risk');
+
+  // ERP Portal CAE Result payload is always consumed directly as primary semester
+  const erpSemesters = buildMarksEngineSemesters(
+    {
+      currentSemester: 6,
+      semesters: [
+        {
+          semester: 5,
+          termLabel: 'Nov 2025',
+          sgpa: 8.95,
+          credits: 8,
+          courses: [
+            { courseCode: 'SCSA1501', courseName: 'Artificial Intelligence', credits: 4, grade: 'O', gradePoints: 10 },
+            { courseCode: 'SCSA1502', courseName: 'Web Engineering', credits: 4, grade: 'A+', gradePoints: 9 },
+          ],
+        },
+      ],
+      currentCourses: [
+        { courseCode: 'SCSA1601', courseName: 'Computer Networks', credits: 4, expectedGrade: 'A+' },
+        { courseCode: 'SCSA1602', courseName: 'Compiler Design', credits: 4, expectedGrade: 'B+' },
+      ],
+      caeMarks: [
+        {
+          courseCode: 'SCSA1601',
+          courseName: 'Computer Networks',
+          credits: 4,
+          cae1: 44,
+          cae1Max: 50,
+          cae2: 42,
+          cae2Max: 50,
+          internalBonus: 9,
+          internalBonusMax: 10,
+          internalTotal: 43.4,
+          internalMax: 50,
+          standing: 'strong',
+        },
+        {
+          courseCode: 'SCSA1602',
+          courseName: 'Compiler Design',
+          credits: 4,
+          cae1: 29,
+          cae1Max: 50,
+          cae2: null,
+          cae2Max: 50,
+          internalBonus: 7,
+          internalBonusMax: 10,
+          internalTotal: 31.0,
+          internalMax: 50,
+          standing: 'needs-improvement',
+        },
+      ],
+    },
+    true
+  );
+
+  assert.equal(erpSemesters[0].label, 'Semester 6 (CAE)');
+  assert.equal(erpSemesters[0].isCaeTerm, true);
+  assert.equal(erpSemesters[0].courses[0].courseCode, 'SCSA1601');
+  assert.equal(erpSemesters[0].courses[0].cae1, 44);
+  assert.equal(erpSemesters[0].courses[0].internalTotal, 43.4);
+  assert.equal(erpSemesters[0].courses[1].cae2, null); // Preserves pending ERP CAE 2
+  assert.equal(erpSemesters[1].label, 'Semester 5');
+  assert.equal(erpSemesters[1].courses[0].courseCode, 'SCSA1501');
+
+  // Null payload gracefully falls back
+  assert.equal(buildMarksEngineSemesters(null, false).length, 2);
 });
 
 
