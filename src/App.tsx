@@ -14,6 +14,8 @@ import { ResultsView } from './components/ResultsView';
 import { SetupHealthView } from './components/SetupHealthView';
 import { Sidebar } from './components/Sidebar';
 import { SignInView } from './components/SignInView';
+import { SistmatePresentationView } from './components/SistmatePresentationView';
+import { SistmateWelcomeView } from './components/SistmateWelcomeView';
 import { TimetableView } from './components/TimetableView';
 import { TopBar } from './components/TopBar';
 import {
@@ -106,12 +108,25 @@ function getInitialAutoSyncMinutes(): AutoSyncIntervalMinutes {
   return 5;
 }
 
+type PreLoginPage = 'welcome' | 'signin' | 'presentation' | 'guide';
+
+function getInitialPreLoginPage(): PreLoginPage {
+  if (typeof window !== 'undefined') {
+    if (window.location.pathname === '/login') return 'signin';
+    if (window.location.pathname === '/presentation') return 'presentation';
+    if (window.location.pathname === '/live-guide') return 'guide';
+  }
+  return 'welcome';
+}
+
 function getInitialSection(): NavSection {
   if (typeof window !== 'undefined') {
     if (window.location.pathname === '/setup') return 'setup';
     if (window.location.pathname === '/live-guide') return 'live-guide';
     if (window.location.pathname === '/sync') return 'sync';
     if (window.location.pathname === '/marks') return 'marks';
+    if (window.location.pathname === '/welcome') return 'welcome';
+    if (window.location.pathname === '/presentation') return 'presentation';
   }
   return 'overview';
 }
@@ -119,9 +134,7 @@ function getInitialSection(): NavSection {
 export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme);
   const [activeSection, setActiveSection] = useState<NavSection>(getInitialSection);
-  const [showPreLoginGuide, setShowPreLoginGuide] = useState<boolean>(
-    () => typeof window !== 'undefined' && window.location.pathname === '/live-guide'
-  );
+  const [preLoginPage, setPreLoginPage] = useState<PreLoginPage>(getInitialPreLoginPage);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
@@ -344,6 +357,7 @@ export default function App() {
         requestVersions.current[key] = (requestVersions.current[key] ?? 0) + 1;
       }
       setSignInInitialMode(nextMode);
+      setPreLoginPage('signin');
       setUser(null);
       setProfile(emptySection());
       setAttendance(emptySection());
@@ -644,16 +658,56 @@ export default function App() {
   }
 
   if (!user) {
-    if (showPreLoginGuide) {
+    if (preLoginPage === 'welcome') {
+      return (
+        <SistmateWelcomeView
+          standalone
+          theme={theme}
+          onToggleTheme={handleToggleTheme}
+          onSignIn={() => {
+            setPreLoginPage('signin');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
+          onOpenPresentation={() => {
+            setPreLoginPage('presentation');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
+          onOpenGuide={() => {
+            setPreLoginPage('guide');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
+        />
+      );
+    }
+
+    if (preLoginPage === 'presentation') {
+      return (
+        <SistmatePresentationView
+          standalone
+          theme={theme}
+          onToggleTheme={handleToggleTheme}
+          onSignIn={() => {
+            setPreLoginPage('signin');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
+          onBack={() => {
+            setPreLoginPage('welcome');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
+        />
+      );
+    }
+
+    if (preLoginPage === 'guide') {
       return (
         <LiveLoginGuideView
           standalone
           theme={theme}
           onToggleTheme={handleToggleTheme}
-          onBack={() => setShowPreLoginGuide(false)}
+          onBack={() => setPreLoginPage('signin')}
           onGoToLiveSignIn={() => {
             setSignInInitialMode('live');
-            setShowPreLoginGuide(false);
+            setPreLoginPage('signin');
           }}
         />
       );
@@ -664,10 +718,12 @@ export default function App() {
         theme={theme}
         initialMode={signInInitialMode}
         onToggleTheme={handleToggleTheme}
-        onOpenGuide={() => setShowPreLoginGuide(true)}
+        onOpenGuide={() => setPreLoginPage('guide')}
+        onBackToWelcome={() => setPreLoginPage('welcome')}
+        onOpenPresentation={() => setPreLoginPage('presentation')}
         onSignedIn={(signedUser, warning) => {
           setSignInInitialMode(undefined);
-          setShowPreLoginGuide(false);
+          setPreLoginPage('welcome');
           setUser(signedUser);
           setAuthNotice(warning ?? null);
           setActiveSection('overview');
@@ -858,6 +914,27 @@ export default function App() {
             {activeSection === 'live-guide' ? (
               <LiveLoginGuideView
                 onGoToLiveSignIn={() => void handleSignOut('live')}
+              />
+            ) : null}
+
+            {activeSection === 'welcome' ? (
+              <SistmateWelcomeView
+                standalone={false}
+                theme={theme}
+                onToggleTheme={handleToggleTheme}
+                onSignIn={() => setActiveSection('sync')}
+                onOpenPresentation={() => setActiveSection('presentation')}
+                onOpenGuide={() => setActiveSection('live-guide')}
+              />
+            ) : null}
+
+            {activeSection === 'presentation' ? (
+              <SistmatePresentationView
+                standalone={false}
+                theme={theme}
+                onToggleTheme={handleToggleTheme}
+                onSignIn={() => setActiveSection('sync')}
+                onBack={() => setActiveSection('welcome')}
               />
             ) : null}
 

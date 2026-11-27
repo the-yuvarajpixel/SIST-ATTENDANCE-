@@ -68,6 +68,8 @@ export function CommandPalette({
       { id: 'nav-notifications', group: 'Navigate', label: 'Notifications & Circulars', detail: 'Searchable ERP and LMS feed', run: () => onNavigate('notifications') },
       { id: 'nav-sync', group: 'Navigate', label: 'Sync Moodle LMS & College ERP', detail: 'Connect portals in-place and force live sync', run: () => onNavigate('sync') },
       { id: 'nav-live-guide', group: 'Navigate', label: 'Live Login Guide', detail: 'Step-by-step Moodle LMS & College ERP setup', run: () => onNavigate('live-guide') },
+      { id: 'nav-welcome', group: 'Navigate', label: 'SIST-attendance Welcome Page', detail: 'Product overview, 80% attendance calculator, privacy, FAQ & summaries', run: () => onNavigate('welcome') },
+      { id: 'nav-presentation', group: 'Navigate', label: 'SIST-attendance 8-Slide Presentation', detail: 'Concise 8-slide deck introducing SIST-attendance to Sathyabama students', run: () => onNavigate('presentation') },
       { id: 'nav-setup', group: 'Navigate', label: 'Setup & Health Diagnostics', detail: 'Check ERP/LMS readiness and resilience test', run: () => onNavigate('setup') },
       { id: 'act-theme', group: 'Action', label: 'Toggle Light / Dark Theme', detail: 'Switch portal color scheme', run: onToggleTheme },
       { id: 'act-refresh', group: 'Action', label: 'Refresh All Sections', detail: 'Re-fetch ERP and LMS data', run: onRefreshAll },

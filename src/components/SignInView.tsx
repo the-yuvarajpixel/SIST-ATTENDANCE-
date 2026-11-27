@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type FormEvent } from 'react';
-import { BookOpen, Check, CheckCircle2, ChevronDown, ClipboardPaste, Copy, ExternalLink, Info, Lock, Moon, Sun, Zap } from 'lucide-react';
+import { ArrowLeft, BookOpen, Check, CheckCircle2, ChevronDown, ClipboardPaste, Copy, ExternalLink, Info, Lock, Moon, Presentation, Sun, Zap } from 'lucide-react';
 import {
   ERP_CONSOLE_COPY_SNIPPET,
   extractErpAccessToken,
@@ -16,6 +16,8 @@ interface SignInViewProps {
   onToggleTheme: () => void;
   onSignedIn: (user: SessionUser, warning?: string) => void;
   onOpenGuide: () => void;
+  onBackToWelcome?: () => void;
+  onOpenPresentation?: () => void;
 }
 
 type LiveAuthMethod = 'auto-login' | 'direct-website';
@@ -70,7 +72,15 @@ function cleanPastedToken(raw: string): string {
   return extracted.token ?? raw.trim().replace(/^["']+|["']+$/g, '').trim();
 }
 
-export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOpenGuide }: SignInViewProps) {
+export function SignInView({
+  theme,
+  initialMode,
+  onToggleTheme,
+  onSignedIn,
+  onOpenGuide,
+  onBackToWelcome,
+  onOpenPresentation,
+}: SignInViewProps) {
   const [mode, setMode] = useState<DataSourceMode>(initialMode ?? 'mock');
   const [liveAuthMethod, setLiveAuthMethod] = useState<LiveAuthMethod>('auto-login');
   const [erpRole, setErpRole] = useState<ErpUserRole>('student');
@@ -369,18 +379,40 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
-      <header className="h-14 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 flex items-center justify-between gap-4">
-        <span className="font-display text-base font-bold tracking-tight text-slate-900 dark:text-slate-50 truncate">
-          SIST Student Portal
-        </span>
+      <header className="h-14 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 sm:px-6 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3 min-w-0">
+          {onBackToWelcome ? (
+            <button
+              type="button"
+              onClick={onBackToWelcome}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Welcome</span>
+            </button>
+          ) : null}
+          <span className="font-display text-base font-bold tracking-tight text-slate-900 dark:text-slate-50 truncate">
+            SIST-attendance · SIST Student Portal
+          </span>
+        </div>
         <div className="flex items-center gap-2 shrink-0">
+          {onOpenPresentation ? (
+            <button
+              type="button"
+              onClick={onOpenPresentation}
+              className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <Presentation className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>8-Slide Deck</span>
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onOpenGuide}
             className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/40 px-3 py-1.5 text-xs font-medium text-blue-800 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors cursor-pointer whitespace-nowrap"
           >
             <BookOpen className="h-3.5 w-3.5" aria-hidden="true" />
-            Live Login Guide
+            <span>Live Login Guide</span>
           </button>
           <button
             type="button"
@@ -389,7 +421,7 @@ export function SignInView({ theme, initialMode, onToggleTheme, onSignedIn, onOp
             className="inline-flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
           >
             {theme === 'dark' ? <Sun className="h-3.5 w-3.5" aria-hidden="true" /> : <Moon className="h-3.5 w-3.5" aria-hidden="true" />}
-            {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+            <span className="hidden md:inline">{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
           </button>
         </div>
       </header>

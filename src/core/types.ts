@@ -12,6 +12,8 @@ export type NavSection =
   | 'notifications'
   | 'sync'
   | 'live-guide'
+  | 'welcome'
+  | 'presentation'
   | 'setup';
 
 export interface StudentProfile {

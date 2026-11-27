@@ -6,6 +6,16 @@ import {
   formatExtractedTokenSummary,
 } from './erpTokenHelper';
 import {
+  SISTMATE_AUDIENCE_OVERVIEWS,
+  SISTMATE_DISCLAIMER,
+  SISTMATE_FAQS,
+  SISTMATE_PROMISE,
+  SISTMATE_SLIDES,
+  SISTMATE_UNDER_200_SUMMARY,
+  computeSkipLineResult,
+  countWords,
+} from './sistmateContent';
+import {
   analyzeAttendanceInsights,
   buildDailyAttendanceLog,
   buildWeeklyAttendanceTrend,
@@ -951,3 +961,61 @@ test('extractErpAccessToken extracts tokens from raw JWT, quoted strings, header
   assert.equal(extractErpAccessToken('undefined').token, null);
   assert.equal(extractErpAccessToken('short').token, null);
 });
+
+test('sistmateContent enforces 8-slide structure, under-200-word summary, sample-data labeling, and 80% skip-line math', () => {
+  assert.equal(SISTMATE_SLIDES.length, 8);
+  assert.equal(SISTMATE_PROMISE, 'Know where you stand before the next class.');
+  assert.equal(
+    SISTMATE_DISCLAIMER,
+    'SIST-attendance is an independent project and is not affiliated with Sathyabama or its ERP.'
+  );
+  assert.doesNotMatch(SISTMATE_UNDER_200_SUMMARY, /sistmate/i);
+  assert.match(SISTMATE_UNDER_200_SUMMARY, /SIST-attendance/);
+
+  // Slide 4 must clearly label the 8.42 CGPA example as sample data
+  const cgpaSlide = SISTMATE_SLIDES[3];
+  assert.equal(cgpaSlide.id, 4);
+  assert.match(cgpaSlide.headline, /CGPA/i);
+  assert.match(cgpaSlide.bullets.join(' ') + ' ' + (cgpaSlide.sampleNote ?? ''), /8\.42/);
+  assert.match(cgpaSlide.bullets.join(' ') + ' ' + (cgpaSlide.sampleNote ?? ''), /sample data/i);
+
+  // Slide 8 must carry the exact CTA
+  const ctaSlide = SISTMATE_SLIDES[7];
+  assert.equal(ctaSlide.id, 8);
+  assert.match(ctaSlide.headline, /Sign in to see your own numbers against the line/i);
+
+  // Under-200-word summary check
+  const summaryWordCount = countWords(SISTMATE_UNDER_200_SUMMARY);
+  assert.ok(summaryWordCount > 60 && summaryWordCount < 200, `Expected summary under 200 words, got ${summaryWordCount}`);
+  assert.match(SISTMATE_UNDER_200_SUMMARY, /not affiliated with Sathyabama/i);
+
+  // Audience overviews for both students and college administrators / faculty
+  assert.match(SISTMATE_AUDIENCE_OVERVIEWS.students.closing, /independent project/i);
+  assert.match(SISTMATE_AUDIENCE_OVERVIEWS.administrators.closing, /independent project/i);
+  assert.ok(SISTMATE_AUDIENCE_OVERVIEWS.students.sections.length >= 3);
+  assert.ok(SISTMATE_AUDIENCE_OVERVIEWS.administrators.sections.length >= 3);
+
+  // Required FAQ entries
+  assert.ok(SISTMATE_FAQS.some((f) => /official/i.test(f.question)));
+  assert.ok(SISTMATE_FAQS.some((f) => /iPhone/i.test(f.question)));
+  assert.ok(SISTMATE_FAQS.some((f) => /CGPA/i.test(f.question)));
+
+  // 80% attendance skip-line calculator math
+  const safe = computeSkipLineResult(42, 48, 80);
+  assert.equal(safe.percentage, 87.5);
+  assert.equal(safe.canSkip, 4);
+  assert.equal(safe.mustAttend, 0);
+  assert.equal(safe.status, 'safe');
+
+  const borderline = computeSkipLineResult(40, 50, 80);
+  assert.equal(borderline.percentage, 80);
+  assert.equal(borderline.canSkip, 0);
+  assert.equal(borderline.mustAttend, 0);
+
+  const below = computeSkipLineResult(30, 42, 80);
+  assert.equal(below.percentage, 71.4);
+  assert.equal(below.canSkip, 0);
+  assert.equal(below.mustAttend, 18); // (30 + 18) / (42 + 18) = 48 / 60 = 80.0%
+  assert.equal(below.status, 'below');
+});
+

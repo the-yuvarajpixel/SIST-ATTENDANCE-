@@ -12,6 +12,8 @@ const SECTION_TITLES: Record<NavSection, string> = {
   notifications: 'Notifications',
   sync: 'Sync LMS & ERP',
   'live-guide': 'Live Login Guide',
+  welcome: 'SIST-attendance Welcome',
+  presentation: 'SIST-attendance 8-Slide Deck',
   setup: 'Setup & Health',
 };
 
