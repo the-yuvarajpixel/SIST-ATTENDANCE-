@@ -112,23 +112,86 @@ function getInitialAutoSyncMinutes(): AutoSyncIntervalMinutes {
 
 type PreLoginPage = 'welcome' | 'signin' | 'presentation' | 'guide';
 
+function resolveSectionFromPathname(pathname: string): NavSection | null {
+  switch (pathname) {
+    case '/attendance':
+    case '/calculator':
+      return 'attendance';
+    case '/trends':
+      return 'attendance-trends';
+    case '/timetable':
+      return 'timetable';
+    case '/marks':
+      return 'marks';
+    case '/results':
+      return 'results';
+    case '/deadlines':
+      return 'deadlines';
+    case '/notifications':
+      return 'notifications';
+    case '/sync':
+      return 'sync';
+    case '/live-guide':
+      return 'live-guide';
+    case '/welcome':
+      return 'welcome';
+    case '/presentation':
+      return 'presentation';
+    case '/setup':
+      return 'setup';
+    default:
+      return null;
+  }
+}
+
+function resolvePathnameForSection(section: NavSection, currentPathname: string): string {
+  switch (section) {
+    case 'attendance':
+      return currentPathname === '/calculator' ? '/calculator' : '/attendance';
+    case 'attendance-trends':
+      return '/trends';
+    case 'timetable':
+      return '/timetable';
+    case 'marks':
+      return '/marks';
+    case 'results':
+      return '/results';
+    case 'deadlines':
+      return '/deadlines';
+    case 'notifications':
+      return '/notifications';
+    case 'sync':
+      return '/sync';
+    case 'live-guide':
+      return '/live-guide';
+    case 'welcome':
+      return '/welcome';
+    case 'presentation':
+      return '/presentation';
+    case 'setup':
+      return '/setup';
+    case 'overview':
+    default:
+      return '/';
+  }
+}
+
 function getInitialPreLoginPage(): PreLoginPage {
   if (typeof window !== 'undefined') {
-    if (window.location.pathname === '/login') return 'signin';
-    if (window.location.pathname === '/presentation') return 'presentation';
-    if (window.location.pathname === '/live-guide') return 'guide';
+    const path = window.location.pathname;
+    if (path === '/login') return 'signin';
+    if (path === '/presentation') return 'presentation';
+    if (path === '/live-guide') return 'guide';
+    if (path === '/attendance' || path === '/calculator' || path === '/marks' || path === '/results' || path === '/timetable') {
+      return 'signin';
+    }
   }
   return 'welcome';
 }
 
 function getInitialSection(): NavSection {
   if (typeof window !== 'undefined') {
-    if (window.location.pathname === '/setup') return 'setup';
-    if (window.location.pathname === '/live-guide') return 'live-guide';
-    if (window.location.pathname === '/sync') return 'sync';
-    if (window.location.pathname === '/marks') return 'marks';
-    if (window.location.pathname === '/welcome') return 'welcome';
-    if (window.location.pathname === '/presentation') return 'presentation';
+    return resolveSectionFromPathname(window.location.pathname) ?? 'overview';
   }
   return 'overview';
 }
@@ -195,6 +258,29 @@ export default function App() {
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'auto' });
   }, [activeSection]);
+
+  // Keep browser URL synced with authenticated sections (preserving /calculator alias)
+  useEffect(() => {
+    if (!user || typeof window === 'undefined') return;
+    const nextPath = resolvePathnameForSection(activeSection, window.location.pathname);
+    if (window.location.pathname !== nextPath) {
+      window.history.replaceState(null, '', `${nextPath}${window.location.search}`);
+    }
+  }, [user, activeSection]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onPopState = () => {
+      const matched = resolveSectionFromPathname(window.location.pathname);
+      if (matched) {
+        setActiveSection(matched);
+      } else if (window.location.pathname === '/') {
+        setActiveSection('overview');
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   const requestVersions = useRef<Partial<Record<SectionKey, number>>>({});
   const skipNextAutoLoad = useRef(false);
@@ -732,7 +818,11 @@ export default function App() {
           setPreLoginPage('welcome');
           setUser(signedUser);
           setAuthNotice(warning ?? null);
-          setActiveSection('overview');
+          const requestedSection =
+            typeof window !== 'undefined'
+              ? resolveSectionFromPathname(window.location.pathname)
+              : null;
+          setActiveSection(requestedSection ?? 'overview');
         }}
       />
     );
@@ -822,6 +912,7 @@ export default function App() {
                   timetable={timetable.envelope?.data ?? []}
                   targetPercent={attendanceTarget}
                   endDate={attendanceEndDate}
+                  user={user}
                   onChangeEndDate={handleChangeAttendanceEndDate}
                   onChangeTarget={setAttendanceTarget}
                   onNavigate={setActiveSection}
